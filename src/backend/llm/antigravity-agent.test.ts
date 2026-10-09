@@ -36,7 +36,12 @@ describe("Antigravity Agent 流", () => {
           { type: "thinking", thinking: "kept", thinkingSignature: SIGNATURE },
           { type: "text", text: "answer", textSignature: SIGNATURE },
           { type: "text", text: "", textSignature: "BBBB" },
-          { type: "toolCall", id: "call/1", name: "lookup", arguments: { q: "a" } },
+          {
+            type: "toolCall",
+            id: "call/1",
+            name: "lookup",
+            arguments: { q: "a" },
+          },
           {
             type: "toolCall",
             id: "call_2",
@@ -51,7 +56,11 @@ describe("Antigravity Agent 流", () => {
       {
         reasoning: "high",
         maxTokens: 100_000,
-        headers: { "User-Agent": "LinguaGacha/Test", "X-Test": "1" },
+        headers: {
+          "User-Agent": "LinguaGacha/Test",
+          Authorization: "Bearer stolen",
+          "X-Test": "1",
+        },
         extra_body: { marker: true },
       },
     );
@@ -60,7 +69,7 @@ describe("Antigravity Agent 流", () => {
     expect(body).toMatchObject({
       marker: true,
       project: "project",
-      model: "gemini-3.1-pro",
+      model: "gemini-pro-agent",
       userAgent: "antigravity",
       requestType: "agent",
     });
@@ -84,7 +93,9 @@ describe("Antigravity Agent 流", () => {
       {
         role: "user",
         parts: [
-          { functionResponse: { name: "lookup", response: { output: "found" } } },
+          {
+            functionResponse: { name: "lookup", response: { output: "found" } },
+          },
           {
             functionResponse: {
               name: "lookup",
@@ -96,21 +107,27 @@ describe("Antigravity Agent 流", () => {
       },
     ]);
     expect(JSON.stringify(request["contents"])).not.toContain('"id"');
-    expect(request["toolConfig"]).toEqual({ functionCallingConfig: { mode: "VALIDATED" } });
+    expect(request["toolConfig"]).toEqual({
+      functionCallingConfig: { mode: "VALIDATED" },
+    });
     expect(JSON.stringify(request["tools"])).toContain("parametersJsonSchema");
     expect(JSON.stringify(request["tools"])).not.toContain('"parameters":');
     expect(generation_of(request)).toMatchObject({
-      maxOutputTokens: 65_536,
+      maxOutputTokens: 65_535,
       thinkingConfig: { includeThoughts: true, thinkingBudget: 10_001 },
     });
     expect(generation_of(request)["thinkingConfig"]).not.toHaveProperty("thinkingLevel");
     expect(captures[0]?.headers.get("authorization")).toBe("Bearer token");
     expect(captures[0]?.headers.get("user-agent")).toMatch(/^antigravity\/hub\//u);
     expect(captures[0]?.headers.get("x-test")).toBe("1");
-    expect(request["labels"]).toMatchObject({ last_step_index: "2", used_claude: "false" });
+    expect(request["labels"]).toMatchObject({
+      last_step_index: "2",
+      used_claude: "false",
+      model_enum: "MODEL_PLACEHOLDER_M16",
+    });
   });
 
-  it("关闭思考时按模型家族抑制，Claude 则改用 beta 头并不发送 Gemini 思考配置", async () => {
+  it("关闭思考时按模型家族抑制，Claude 用思考预算和 beta 头", async () => {
     const pro = test_model("gemini-3-pro");
     const closed = await run(pro, context([user()]));
     expect(generation_of(request_of(closed.captures[0]))["thinkingConfig"]).toEqual({
@@ -134,8 +151,13 @@ describe("Antigravity Agent 流", () => {
       maxTokens: 100_000,
     });
     const claude_request = request_of(claude_turn.captures[0]);
-    expect(generation_of(claude_request)).toEqual({ maxOutputTokens: 64_000 });
-    expect(claude_request["toolConfig"]).toEqual({ functionCallingConfig: { mode: "VALIDATED" } });
+    expect(generation_of(claude_request)).toEqual({
+      maxOutputTokens: 64_000,
+      thinkingConfig: { includeThoughts: true, thinkingBudget: 16_384 },
+    });
+    expect(claude_request["toolConfig"]).toEqual({
+      functionCallingConfig: { mode: "VALIDATED" },
+    });
     expect(claude_request).not.toHaveProperty("tools");
     expect(claude_turn.captures[0]?.headers.get("anthropic-beta")).toBe(
       "interleaved-thinking-2025-05-14",
@@ -144,6 +166,64 @@ describe("Antigravity Agent 流", () => {
       used_claude: "true",
       used_claude_conservative: "true",
     });
+  });
+
+  it("3.1 Pro 高档请求名改为 gemini-pro-agent，关档留在 low 并写死输出上限", async () => {
+    const closed = await run(test_model("gemini-3.1-pro-high"), context([user()]));
+    const closed_request = request_of(closed.captures[0]);
+    expect(closed.captures[0]?.body["model"]).toBe("gemini-3.1-pro-low");
+    expect(generation_of(closed_request)).toMatchObject({
+      maxOutputTokens: 65_535,
+      thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
+    });
+    expect(labels_of(closed_request)["model_enum"]).toBe("MODEL_PLACEHOLDER_M36");
+
+    const high = await run(test_model("gemini-3.1-pro-low"), context([user()]), {
+      reasoning: "high",
+    });
+    const high_request = request_of(high.captures[0]);
+    expect(high.captures[0]?.body["model"]).toBe("gemini-pro-agent");
+    expect(generation_of(high_request)["thinkingConfig"]).toEqual({
+      includeThoughts: true,
+      thinkingBudget: 10_001,
+    });
+    expect(labels_of(high_request)["model_enum"]).toBe("MODEL_PLACEHOLDER_M16");
+  });
+
+  it("目录未标记思考能力的 Claude 仍按档位发送预算和 beta 头", async () => {
+    const model = test_model("claude-sonnet-4-6", { reasoning: false });
+    const closed = await run(model, context([user()], []));
+    expect(generation_of(request_of(closed.captures[0]))).toEqual({
+      maxOutputTokens: 64_000,
+    });
+    expect(closed.captures[0]?.headers.get("anthropic-beta")).toBeNull();
+
+    const low = await run(model, context([user()], []), { reasoning: "low" });
+    expect(generation_of(request_of(low.captures[0]))["thinkingConfig"]).toEqual({
+      includeThoughts: true,
+      thinkingBudget: 4_096,
+    });
+    expect(low.captures[0]?.headers.get("anthropic-beta")).toBe("interleaved-thinking-2025-05-14");
+
+    const high = await run(model, context([user()], []), { reasoning: "high" });
+    expect(generation_of(request_of(high.captures[0]))["thinkingConfig"]).toEqual({
+      includeThoughts: true,
+      thinkingBudget: 16_384,
+    });
+  });
+
+  it("把调用方的 temperature 和 top_p 写入 generationConfig", async () => {
+    const flashed = await run(test_model("gemini-3.8-flash-high"), context([user()]), {
+      temperature: 0.2,
+      top_p: 0.8,
+    });
+    const request = request_of(flashed.captures[0]);
+    expect(flashed.captures[0]?.body["model"]).toBe("gemini-3.8-flash-high");
+    expect(generation_of(request)).toMatchObject({
+      temperature: 0.2,
+      topP: 0.8,
+    });
+    expect(generation_of(request)).not.toHaveProperty("thinkingConfig");
   });
 
   it("Claude 保留函数 id 和签名思考，并丢弃没有签名的思考", async () => {
@@ -155,7 +235,11 @@ describe("Antigravity Agent 流", () => {
           user("hello"),
           assistant(model, [
             { type: "thinking", thinking: "drop me" },
-            { type: "thinking", thinking: "keep me", thinkingSignature: SIGNATURE },
+            {
+              type: "thinking",
+              thinking: "keep me",
+              thinkingSignature: SIGNATURE,
+            },
             {
               type: "toolCall",
               id: "bad/id",
@@ -186,11 +270,19 @@ describe("Antigravity Agent 流", () => {
       {
         role: "user",
         parts: [
-          { functionResponse: { name: "lookup", id: "bad_id", response: { output: "found" } } },
+          {
+            functionResponse: {
+              name: "lookup",
+              id: "bad_id",
+              response: { output: "found" },
+            },
+          },
         ],
       },
     ]);
-    expect(request["toolConfig"]).toEqual({ functionCallingConfig: { mode: "VALIDATED" } });
+    expect(request["toolConfig"]).toEqual({
+      functionCallingConfig: { mode: "VALIDATED" },
+    });
     expect(JSON.stringify(request["tools"])).toContain('"parameters"');
     expect(JSON.stringify(request["tools"])).not.toContain("parametersJsonSchema");
     expect(captures[0]?.headers.get("anthropic-beta")).toBeNull();
@@ -211,11 +303,19 @@ describe("Antigravity Agent 流", () => {
     );
     expect(request_of(captures[0])["contents"]).toEqual([
       { role: "user", parts: [{ text: "hello" }] },
-      { role: "model", parts: [{ functionCall: { name: "lookup", args: {} } }] },
+      {
+        role: "model",
+        parts: [{ functionCall: { name: "lookup", args: {} } }],
+      },
       {
         role: "user",
         parts: [
-          { functionResponse: { name: "lookup", response: { output: "(see attached image)" } } },
+          {
+            functionResponse: {
+              name: "lookup",
+              response: { output: "(see attached image)" },
+            },
+          },
         ],
       },
       {
@@ -246,7 +346,9 @@ describe("Antigravity Agent 流", () => {
             response: {
               candidates: [
                 {
-                  content: { parts: [{ text: "lo", thoughtSignature: SIGNATURE }] },
+                  content: {
+                    parts: [{ text: "lo", thoughtSignature: SIGNATURE }],
+                  },
                   finishReason: "STOP",
                 },
               ],
@@ -314,7 +416,15 @@ describe("Antigravity Agent 流", () => {
               candidates: [
                 {
                   content: {
-                    parts: [{ functionCall: { name: "lookup", id: "bad/id", args: { q: "a" } } }],
+                    parts: [
+                      {
+                        functionCall: {
+                          name: "lookup",
+                          id: "bad/id",
+                          args: { q: "a" },
+                        },
+                      },
+                    ],
                   },
                   finishReason: "MAX_TOKENS",
                 },
@@ -343,7 +453,9 @@ describe("Antigravity Agent 流", () => {
             response: {
               candidates: [
                 {
-                  content: { parts: [{ functionCall: { name: "lookup", args: {} } }] },
+                  content: {
+                    parts: [{ functionCall: { name: "lookup", args: {} } }],
+                  },
                   finishReason: "SAFETY",
                 },
               ],
@@ -385,7 +497,13 @@ describe("Antigravity Agent 流", () => {
 
     const empty = await run(model, context([user()]), {
       responses: [
-        sse([{ response: { candidates: [{ content: { parts: [] }, finishReason: "STOP" }] } }]),
+        sse([
+          {
+            response: {
+              candidates: [{ content: { parts: [] }, finishReason: "STOP" }],
+            },
+          },
+        ]),
       ],
     });
     expect(empty.events).toEqual(["error"]);
@@ -413,7 +531,10 @@ describe("Antigravity Agent 流", () => {
         sse([
           {
             response: {
-              promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "Blocked by policy" },
+              promptFeedback: {
+                blockReason: "SAFETY",
+                blockReasonMessage: "Blocked by policy",
+              },
             },
           },
         ]),
@@ -432,7 +553,9 @@ describe("Antigravity Agent 流", () => {
       signal: controller.signal,
       fetch: async () => {
         calls += 1;
-        throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+        throw Object.assign(new Error("The operation was aborted"), {
+          name: "AbortError",
+        });
       },
     });
     const aborted_message = await aborted.result();
@@ -463,7 +586,9 @@ describe("Antigravity Agent 流", () => {
       model,
       context([
         user("same"),
-        assistant(model, [{ type: "text", text: "old" }], { responseId: "exec-old" }),
+        assistant(model, [{ type: "text", text: "old" }], {
+          responseId: "exec-old",
+        }),
         tool_result("missing", "ignored"),
         assistant(model, [{ type: "text", text: "new" }]),
       ]),
@@ -475,7 +600,9 @@ describe("Antigravity Agent 流", () => {
       model,
       context([
         user("same"),
-        assistant(model, [{ type: "text", text: "new" }], { responseId: "exec-new" }),
+        assistant(model, [{ type: "text", text: "new" }], {
+          responseId: "exec-new",
+        }),
       ]),
     );
     expect(labels_of(request_of(linked.captures[0]))["last_execution_id"]).toBe("exec-new");
@@ -568,8 +695,10 @@ async function run(
   model: Model<Api>,
   transcript: TranscriptContext,
   options: {
-    reasoning?: "high" | "xhigh";
+    reasoning?: "low" | "high" | "xhigh";
     maxTokens?: number;
+    temperature?: number;
+    top_p?: number;
     toolChoice?: "auto" | "none";
     headers?: Record<string, string>;
     extra_body?: JsonRecord;
@@ -584,7 +713,9 @@ async function run(
   const responses = options.responses ?? [
     sse([
       {
-        response: { candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] },
+        response: {
+          candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        },
       },
     ]),
   ];
@@ -594,6 +725,8 @@ async function run(
     project_id: "project",
     ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
     ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.top_p === undefined ? {} : { top_p: options.top_p }),
     ...(options.toolChoice === undefined ? {} : { toolChoice: options.toolChoice }),
     ...(options.headers === undefined ? {} : { headers: options.headers }),
     ...(options.extra_body === undefined ? {} : { extra_body: options.extra_body }),

@@ -248,6 +248,8 @@ async function execute_antigravity_request(
     thinking_level: snapshot.thinking_level,
     temperature: read_custom_number(snapshot.generation, "temperature"),
     top_p: read_custom_number(snapshot.generation, "top_p"),
+    headers: snapshot.headers,
+    extra_body: snapshot.extra_body,
     signal,
   });
   const finish_error = read_antigravity_finish_error(completion);
@@ -266,7 +268,9 @@ async function execute_antigravity_request(
 /** 与 Pi 终态使用同一句用户可见说明，避免两条翻译路径对截断和工具调用说法不一致。 */
 function read_antigravity_finish_error(completion: AntigravityCompletion): LogError | undefined {
   if (completion.finish === "length")
-    return log_error_from_message("供应商返回长度截断。", { finish_reason: "MAX_TOKENS" });
+    return log_error_from_message("供应商返回长度截断。", {
+      finish_reason: "MAX_TOKENS",
+    });
   if (completion.finish === "tool")
     return log_error_from_message("供应商返回工具调用，当前任务不支持。", {
       finish_reason: "tool",

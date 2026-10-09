@@ -31,6 +31,53 @@ const THINKING_LEVELS = {
   XHIGH: "HIGH",
   MAX: "HIGH",
 } as const;
+// Cloud Code Assist 的 Claude 走 Gemini 信封，预算沿用这条传输的档位，不用 Anthropic Messages 的预算表。
+const CLAUDE_THINKING_BUDGETS = {
+  minimal: 1_024,
+  low: 4_096,
+  medium: 8_192,
+  high: 16_384,
+  xhigh: 24_575,
+  max: 32_768,
+} as const;
+const PRO_31_LOW_MODEL = "gemini-3.1-pro-low";
+const PRO_31_HIGH_MODEL = "gemini-pro-agent";
+const PRO_31_LOW_BUDGET = 1_001;
+const PRO_31_HIGH_BUDGET = 10_001;
+// 捕获自 antigravity/hub。model_enum 是 labels 里的遥测；maxOutputTokens 超过档位会被 400。
+// gemini-3.1-pro-high 不在表里：该部署对 streamGenerateContent 一律返回 invalid argument。
+const WIRE_PROFILES: Readonly<Record<string, { max_output_tokens: number; model_enum?: string }>> =
+  {
+    [PRO_31_LOW_MODEL]: {
+      max_output_tokens: 65_535,
+      model_enum: "MODEL_PLACEHOLDER_M36",
+    },
+    [PRO_31_HIGH_MODEL]: {
+      max_output_tokens: 65_535,
+      model_enum: "MODEL_PLACEHOLDER_M16",
+    },
+    "claude-sonnet-4-6": { max_output_tokens: CLAUDE_MAX_OUTPUT_TOKENS },
+    "claude-opus-4-6-thinking": { max_output_tokens: CLAUDE_MAX_OUTPUT_TOKENS },
+  };
+const RESERVED_REQUEST_HEADERS = new Set([
+  "authorization",
+  "host",
+  "user-agent",
+  "content-type",
+  "accept",
+]);
+// 这些字段决定路由和这一次的请求体，用户扩展不能把它改回会 400 的模型名。
+const ENVELOPE_OWNED_FIELDS = new Set([
+  "project",
+  "requestId",
+  "request",
+  "model",
+  "userAgent",
+  "requestType",
+]);
+
+export const ANTIGRAVITY_CLAUDE_THINKING_BETA = "interleaved-thinking-2025-05-14";
+export type AntigravityEffort = "off" | keyof typeof CLAUDE_THINKING_BUDGETS;
 
 export interface AntigravityCompletion {
   response_think: string;
@@ -110,6 +157,8 @@ export async function request_antigravity_text(options: {
   temperature: number | null;
   top_p: number | null;
   signal: AbortSignal;
+  headers?: Readonly<Record<string, string>>;
+  extra_body?: Readonly<JsonRecord>;
 }): Promise<AntigravityCompletion> {
   if (options.model_id.trim() === "")
     throw create_provider_error("Antigravity model id is required", undefined, {
@@ -119,13 +168,89 @@ export async function request_antigravity_text(options: {
     throw create_provider_error("Antigravity project is not ready", undefined, {
       retryable: false,
     });
+  const effort = antigravity_effort_from_product(options.thinking_level);
+  const headers = sanitize_antigravity_headers(options.headers);
+  if (is_antigravity_claude_model(options.model_id) && effort !== "off")
+    headers["anthropic-beta"] = ANTIGRAVITY_CLAUDE_THINKING_BETA;
   const events = await request_sse(
     options.base_url,
-    build_translation_request(options),
+    build_translation_request(options, effort),
     options.access_token,
     options.signal,
+    headers,
   );
   return read_completion(events);
+}
+
+export function is_antigravity_claude_model(model_id: string): boolean {
+  return model_id.split(/[/:]/u).some((part) => part.toLowerCase().startsWith("claude"));
+}
+
+export function is_antigravity_gemini_31_pro(model_id: string): boolean {
+  const id = model_id.trim().toLowerCase();
+  return (
+    id === "gemini-3.1-pro" ||
+    id === PRO_31_LOW_MODEL ||
+    id === "gemini-3.1-pro-high" ||
+    id === PRO_31_HIGH_MODEL
+  );
+}
+
+/** 高档改写到仍接受同一请求体的 gemini-pro-agent；关和低档留在 gemini-3.1-pro-low。 */
+export function resolve_antigravity_request_model(
+  model_id: string,
+  effort: AntigravityEffort,
+): string {
+  if (!is_antigravity_gemini_31_pro(model_id)) return model_id;
+  return effort === "high" || effort === "xhigh" || effort === "max"
+    ? PRO_31_HIGH_MODEL
+    : PRO_31_LOW_MODEL;
+}
+
+export function antigravity_wire_profile(
+  request_model_id: string,
+): { max_output_tokens: number; model_enum?: string } | undefined {
+  return WIRE_PROFILES[request_model_id];
+}
+
+export function antigravity_effort_from_product(level: ModelThinkingLevel): AntigravityEffort {
+  if (level === "LOW") return "low";
+  if (level === "MEDIUM") return "medium";
+  if (level === "HIGH") return "high";
+  if (level === "XHIGH") return "xhigh";
+  if (level === "MAX") return "max";
+  return "off";
+}
+
+export function antigravity_claude_thinking(effort: AntigravityEffort): JsonRecord | undefined {
+  if (effort === "off") return undefined;
+  return {
+    includeThoughts: true,
+    thinkingBudget: CLAUDE_THINKING_BUDGETS[effort],
+  };
+}
+
+/** 3.1 Pro 只用 thinkingBudget。省略配置会回到 SKU 自带档位，关档必须显式写 0。 */
+export function antigravity_pro_31_thinking(effort: AntigravityEffort): JsonRecord {
+  if (effort === "off") return { includeThoughts: false, thinkingBudget: 0 };
+  const high = effort === "high" || effort === "xhigh" || effort === "max";
+  return {
+    includeThoughts: true,
+    thinkingBudget: high ? PRO_31_HIGH_BUDGET : PRO_31_LOW_BUDGET,
+  };
+}
+
+/** 用户头不能改写认证、主机、内容类型和客户端标识。 */
+export function sanitize_antigravity_headers(
+  headers: Readonly<Record<string, string | null | undefined>> | undefined,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (value === null || value === undefined || RESERVED_REQUEST_HEADERS.has(key.toLowerCase()))
+      continue;
+    result[key] = value;
+  }
+  return result;
 }
 
 function antigravity_headers(access_token: string, accept_sse: boolean): Record<string, string> {
@@ -238,15 +363,19 @@ function read_project_id(payload: JsonRecord): string | undefined {
   return typeof project_id === "string" && project_id !== "" ? project_id : undefined;
 }
 
-function build_translation_request(options: {
-  project_id: string;
-  model_id: string;
-  messages: readonly LLMMessage[];
-  output_token_limit: number;
-  thinking_level: ModelThinkingLevel;
-  temperature: number | null;
-  top_p: number | null;
-}): JsonRecord {
+function build_translation_request(
+  options: {
+    project_id: string;
+    model_id: string;
+    messages: readonly LLMMessage[];
+    output_token_limit: number;
+    thinking_level: ModelThinkingLevel;
+    temperature: number | null;
+    top_p: number | null;
+    extra_body?: Readonly<JsonRecord>;
+  },
+  effort: AntigravityEffort,
+): JsonRecord {
   const system = options.messages
     .filter((message) => message.role === "system")
     .map((message) => message.content)
@@ -261,41 +390,69 @@ function build_translation_request(options: {
     throw create_provider_error("Antigravity translation requires user text", undefined, {
       retryable: false,
     });
-  const is_claude = options.model_id.startsWith("claude");
+  const is_claude = is_antigravity_claude_model(options.model_id);
+  const request_model = resolve_antigravity_request_model(options.model_id, effort);
+  const profile = antigravity_wire_profile(request_model);
   const generation_config: JsonRecord = {};
   if (options.temperature !== null) generation_config["temperature"] = options.temperature;
   if (options.top_p !== null) generation_config["topP"] = options.top_p;
-  if (options.output_token_limit > 0) {
+  if (profile !== undefined) generation_config["maxOutputTokens"] = profile.max_output_tokens;
+  else if (options.output_token_limit > 0) {
     const cap = is_claude ? CLAUDE_MAX_OUTPUT_TOKENS : GEMINI_MAX_OUTPUT_TOKENS;
     generation_config["maxOutputTokens"] = Math.min(
       cap,
       Math.max(1, Math.trunc(options.output_token_limit)),
     );
   }
-  const thinking = THINKING_LEVELS[options.thinking_level as keyof typeof THINKING_LEVELS];
-  if (!is_claude && thinking !== undefined)
-    generation_config["thinkingConfig"] = { includeThoughts: true, thinkingLevel: thinking };
+  const thinking = translation_thinking(options.model_id, effort);
+  if (thinking !== undefined) generation_config["thinkingConfig"] = thinking;
   const trajectory_id = randomUUID();
+  const labels: JsonRecord = {
+    last_step_index: "1",
+    trajectory_id,
+    used_claude: String(is_claude),
+    used_claude_conservative: String(is_claude),
+  };
+  if (profile?.model_enum !== undefined) labels["model_enum"] = profile.model_enum;
   const request: JsonRecord = {
     contents: [{ role: "user", parts: [{ text: user }] }],
     sessionId: derive_antigravity_session_id(user),
-    labels: {
-      last_step_index: "1",
-      trajectory_id,
-      used_claude: String(is_claude),
-      used_claude_conservative: String(is_claude),
-    },
+    labels,
   };
   if (system !== "") request["systemInstruction"] = { role: "user", parts: [{ text: system }] };
   if (Object.keys(generation_config).length > 0) request["generationConfig"] = generation_config;
-  return {
-    project: options.project_id,
-    requestId: `agent/${randomUUID()}/${Date.now()}/${trajectory_id}/2`,
-    request,
-    model: options.model_id,
-    userAgent: "antigravity",
-    requestType: "agent",
-  };
+  return apply_antigravity_extra_body(
+    {
+      project: options.project_id,
+      requestId: `agent/${randomUUID()}/${Date.now()}/${trajectory_id}/2`,
+      request,
+      model: request_model,
+      userAgent: "antigravity",
+      requestType: "agent",
+    },
+    options.extra_body,
+  );
+}
+
+export function apply_antigravity_extra_body(
+  envelope: JsonRecord,
+  extra_body: Readonly<JsonRecord> | undefined,
+): JsonRecord {
+  if (extra_body === undefined) return envelope;
+  const additions: JsonRecord = {};
+  for (const [key, value] of Object.entries(extra_body)) {
+    if (ENVELOPE_OWNED_FIELDS.has(key)) continue;
+    additions[key] = value;
+  }
+  return { ...envelope, ...additions };
+}
+
+function translation_thinking(model_id: string, effort: AntigravityEffort): JsonRecord | undefined {
+  if (is_antigravity_claude_model(model_id)) return antigravity_claude_thinking(effort);
+  if (is_antigravity_gemini_31_pro(model_id)) return antigravity_pro_31_thinking(effort);
+  if (effort === "off") return undefined;
+  const level = THINKING_LEVELS[effort.toUpperCase() as keyof typeof THINKING_LEVELS];
+  return level === undefined ? undefined : { includeThoughts: true, thinkingLevel: level };
 }
 
 /** 会话号沿用客户端的负十进制形式，避免空会话被控制面拒绝。 */
@@ -407,8 +564,10 @@ export async function open_antigravity_generate_stream(options: {
         method: "POST",
         headers: {
           ...antigravity_headers(options.access_token, true),
-          ...options.headers,
+          ...sanitize_antigravity_headers(options.headers),
           Authorization: `Bearer ${options.access_token}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
           "User-Agent": get_antigravity_user_agent(),
         },
         body: JSON.stringify(options.body),
@@ -435,12 +594,14 @@ async function request_sse(
   body: JsonRecord,
   access_token: string,
   signal: AbortSignal,
+  headers: Readonly<Record<string, string>>,
 ): Promise<unknown[]> {
   const response = await open_antigravity_generate_stream({
     base_url,
     body,
     access_token,
     signal,
+    headers,
   });
   return read_sse_events(await response.text());
 }
@@ -477,7 +638,9 @@ async function request_with_fallback(
 
 function throw_last(error: unknown): never {
   if (error !== undefined) throw error;
-  throw create_provider_error("Cloud Code Assist request failed", undefined, { retryable: true });
+  throw create_provider_error("Cloud Code Assist request failed", undefined, {
+    retryable: true,
+  });
 }
 
 function endpoint_order(base_url: string): readonly string[] {

@@ -35,21 +35,26 @@ import { is_json_record, type JsonRecord, type JsonValue } from "../../domain/js
 import { AppError } from "../../shared/error";
 import { create_provider_error } from "../network/provider-error";
 import {
+  ANTIGRAVITY_CLAUDE_THINKING_BETA,
   CLAUDE_MAX_OUTPUT_TOKENS,
   GEMINI_MAX_OUTPUT_TOKENS,
+  antigravity_claude_thinking,
+  antigravity_pro_31_thinking,
+  antigravity_wire_profile,
+  apply_antigravity_extra_body,
   derive_antigravity_session_id,
+  is_antigravity_claude_model,
+  is_antigravity_gemini_31_pro,
   open_antigravity_generate_stream,
+  resolve_antigravity_request_model,
+  sanitize_antigravity_headers,
+  type AntigravityEffort,
 } from "./antigravity-cloud-code";
-
-const CLAUDE_THINKING_BETA_HEADER = "interleaved-thinking-2025-05-14";
 // 只放在一轮里第一条未签名的 Gemini 3 函数调用上；已签名的并行调用不能再补。
 const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 const OMITTED_IMAGE_TEXT = "[image omitted: model does not support vision]";
 const TOOL_IMAGE_LABEL = "Tool result image:";
 const BASE64_SIGNATURE = /^[A-Za-z0-9+/]+={0,2}$/u;
-const RESERVED_HEADERS = new Set(["authorization", "host", "user-agent"]);
-const PRO_31_LOW_BUDGET = 1_001;
-const PRO_31_HIGH_BUDGET = 10_001;
 const FLASH_LOW_BUDGET = 1_000;
 const FLASH_MEDIUM_BUDGET = 4_000;
 const FLASH_HIGH_BUDGET = 10_000;
@@ -78,6 +83,7 @@ type OpenBlock = TextContent | ThinkingContent;
 interface AntigravityStreamOptions extends SimpleStreamOptions {
   project_id?: string;
   extra_body?: Readonly<JsonRecord>;
+  top_p?: number;
 }
 
 /**
@@ -109,7 +115,10 @@ export function stream_antigravity_agent(
         base_url: model.baseUrl,
         body: build_envelope(model, context, project_id, options),
         access_token: api_key,
-        headers: request_headers(options.headers, claude_thinking_beta(model, options.reasoning)),
+        headers: request_headers(
+          options.headers,
+          claude_thinking_beta(model.id, options.reasoning),
+        ),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       });
@@ -184,13 +193,17 @@ function build_envelope(
   const assistant_count = messages.filter((message) => message.role === "assistant").length;
   const step = assistant_count + 2;
   const trajectory_id = stable_uuid(user_text, "trajectory");
-  const claude = is_claude_model(model.id);
+  const claude = is_antigravity_claude_model(model.id);
+  const effort = antigravity_effort(options.reasoning);
+  const request_model = resolve_antigravity_request_model(model.id, effort);
+  const profile = antigravity_wire_profile(request_model);
   const labels: JsonRecord = {
     last_step_index: String(step - 1),
     trajectory_id,
     used_claude: String(claude),
     used_claude_conservative: String(claude),
   };
+  if (profile?.model_enum !== undefined) labels["model_enum"] = profile.model_enum;
   const execution_id = last_execution_id(messages);
   if (execution_id !== undefined) labels["last_execution_id"] = execution_id;
   const tools = getCurrentTools(messages);
@@ -200,11 +213,13 @@ function build_envelope(
     !claude && supportsGoogleStrictToolSampling(model.id),
   );
   const generation: JsonRecord = {
-    maxOutputTokens: output_token_limit(model, options.maxTokens),
+    maxOutputTokens: profile?.max_output_tokens ?? output_token_limit(model, options.maxTokens),
   };
   if (options.temperature !== undefined && Number.isFinite(options.temperature))
     generation["temperature"] = options.temperature;
-  const thinking = thinking_config(model.id, model.reasoning, options.reasoning);
+  if (options.top_p !== undefined && Number.isFinite(options.top_p))
+    generation["topP"] = options.top_p;
+  const thinking = thinking_config(model.id, model.reasoning, effort);
   if (thinking !== undefined) generation["thinkingConfig"] = thinking;
   const system = getCurrentSystemPrompt(messages);
   const request: JsonRecord = {
@@ -218,21 +233,23 @@ function build_envelope(
   const calling = tool_config(model.id, tools.length, options.toolChoice);
   if (calling !== undefined) request["toolConfig"] = calling;
   // 会话号和轨迹号由首条用户文本推导：Pi 的流选项没有可持久化的 provider 会话槽。
-  return to_record({
-    project: project_id,
-    requestId: `agent/${stable_uuid(user_text, "agent")}/${Date.now()}/${trajectory_id}/${step}`,
-    request,
-    model: model.id,
-    userAgent: "antigravity",
-    requestType: "agent",
-    ...options.extra_body,
-  });
+  return apply_antigravity_extra_body(
+    to_record({
+      project: project_id,
+      requestId: `agent/${stable_uuid(user_text, "agent")}/${Date.now()}/${trajectory_id}/${step}`,
+      request,
+      model: request_model,
+      userAgent: "antigravity",
+      requestType: "agent",
+    }),
+    options.extra_body,
+  );
 }
 
 function convert_contents(model: Model<Api>, messages: readonly Message[]): WireContent[] {
   const contents: WireContent[] = [];
   const names = new Map<string, string>();
-  const claude = is_claude_model(model.id);
+  const claude = is_antigravity_claude_model(model.id);
   const major = gemini_major_version(model.id);
   const multimodal = major === undefined || major >= 3;
   const vision = model.input.includes("image");
@@ -297,7 +314,10 @@ function assistant_parts(
       const signature = thought_signature(same, block.textSignature);
       const text = block.text.toWellFormed();
       if (text.trim() === "" && signature === undefined) continue;
-      parts.push({ text, ...(signature === undefined ? {} : { thoughtSignature: signature }) });
+      parts.push({
+        text,
+        ...(signature === undefined ? {} : { thoughtSignature: signature }),
+      });
       continue;
     }
     if (block.type === "thinking") {
@@ -384,7 +404,8 @@ function tool_config(
   tool_choice: SimpleStreamOptions["toolChoice"],
 ): JsonRecord | undefined {
   // Claude 即使没有工具也强制 VALIDATED，并覆盖本次的 toolChoice。
-  if (is_claude_model(model_id)) return { functionCallingConfig: { mode: "VALIDATED" } };
+  if (is_antigravity_claude_model(model_id))
+    return { functionCallingConfig: { mode: "VALIDATED" } };
   if (tool_count === 0) return undefined;
   if (tool_choice === "none") return { functionCallingConfig: { mode: "NONE" } };
   return { functionCallingConfig: { mode: "VALIDATED" } };
@@ -393,18 +414,27 @@ function tool_config(
 function thinking_config(
   model_id: string,
   reasoning: boolean,
-  level: ThinkingLevel | undefined,
+  effort: AntigravityEffort,
 ): JsonRecord | undefined {
-  // Claude 不接受 Gemini thinkingConfig；开启思考时只加 interleaved-thinking beta 头。
-  if (!reasoning || is_claude_model(model_id)) return undefined;
-  if (level === undefined) {
+  // Claude 的思考是 thinkingBudget，另加 interleaved-thinking beta 头。不看目录里的 reasoning。
+  if (is_antigravity_claude_model(model_id)) return antigravity_claude_thinking(effort);
+  if (is_antigravity_gemini_31_pro(model_id)) return antigravity_pro_31_thinking(effort);
+  if (!reasoning) return undefined;
+  if (effort === "off") {
     if (!suppresses_thinking_when_off(model_id)) return undefined;
     if (uses_thinking_budget(model_id)) return { includeThoughts: false, thinkingBudget: 0 };
     return { includeThoughts: false, thinkingLevel: "LOW" };
   }
   if (uses_thinking_budget(model_id))
-    return { includeThoughts: true, thinkingBudget: thinking_budget(model_id, level) };
-  return { includeThoughts: true, thinkingLevel: wire_thinking_level(level) };
+    return {
+      includeThoughts: true,
+      thinkingBudget: thinking_budget(model_id, effort),
+    };
+  return { includeThoughts: true, thinkingLevel: wire_thinking_level(effort) };
+}
+
+function antigravity_effort(level: ThinkingLevel | undefined): AntigravityEffort {
+  return level ?? "off";
 }
 
 function suppresses_thinking_when_off(model_id: string): boolean {
@@ -418,17 +448,12 @@ function suppresses_thinking_when_off(model_id: string): boolean {
 function uses_thinking_budget(model_id: string): boolean {
   const family = gemini_family(model_id);
   if (family === undefined || family.major !== 3) return true;
-  if (family.kind === "pro" && family.minor === 1) return true;
   if (family.kind === "flash" && family.minor < 6) return true;
   return false;
 }
 
-function thinking_budget(model_id: string, level: ThinkingLevel): number {
+function thinking_budget(model_id: string, level: AntigravityEffort): number {
   const family = gemini_family(model_id);
-  if (family?.major === 3 && family.kind === "pro" && family.minor === 1)
-    return level === "high" || level === "xhigh" || level === "max"
-      ? PRO_31_HIGH_BUDGET
-      : PRO_31_LOW_BUDGET;
   if (family?.major === 3 && family.kind === "flash" && family.minor < 6) {
     if (level === "medium") return FLASH_MEDIUM_BUDGET;
     if (level === "high" || level === "xhigh" || level === "max") return FLASH_HIGH_BUDGET;
@@ -440,37 +465,31 @@ function thinking_budget(model_id: string, level: ThinkingLevel): number {
   return 32_768;
 }
 
-function wire_thinking_level(level: ThinkingLevel): "LOW" | "MEDIUM" | "HIGH" {
+function wire_thinking_level(level: AntigravityEffort): "LOW" | "MEDIUM" | "HIGH" {
   if (level === "medium") return "MEDIUM";
   if (level === "high" || level === "xhigh" || level === "max") return "HIGH";
   return "LOW";
 }
 
 function output_token_limit(model: Model<Api>, max_tokens: number | undefined): number {
-  const cap = is_claude_model(model.id) ? CLAUDE_MAX_OUTPUT_TOKENS : GEMINI_MAX_OUTPUT_TOKENS;
+  const cap = is_antigravity_claude_model(model.id)
+    ? CLAUDE_MAX_OUTPUT_TOKENS
+    : GEMINI_MAX_OUTPUT_TOKENS;
   const requested = max_tokens !== undefined && max_tokens > 0 ? max_tokens : model.maxTokens;
   return Math.min(cap, Math.max(1, Math.trunc(requested > 0 ? requested : cap)));
 }
 
-function claude_thinking_beta(model: Model<Api>, level: ThinkingLevel | undefined): boolean {
-  return is_claude_model(model.id) && model.reasoning && level !== undefined;
+function claude_thinking_beta(model_id: string, level: ThinkingLevel | undefined): boolean {
+  return is_antigravity_claude_model(model_id) && level !== undefined;
 }
 
 function request_headers(
   headers: SimpleStreamOptions["headers"],
   claude_beta: boolean,
 ): Record<string, string> {
-  const result: Record<string, string> = {};
-  if (claude_beta) result["anthropic-beta"] = CLAUDE_THINKING_BETA_HEADER;
-  for (const [key, value] of Object.entries(headers ?? {})) {
-    if (value === null || RESERVED_HEADERS.has(key.toLowerCase())) continue;
-    result[key] = value;
-  }
+  const result = sanitize_antigravity_headers(headers);
+  if (claude_beta) result["anthropic-beta"] = ANTIGRAVITY_CLAUDE_THINKING_BETA;
   return result;
-}
-
-function is_claude_model(model_id: string): boolean {
-  return model_id.split(/[/:]/u).some((part) => part.toLowerCase().startsWith("claude"));
 }
 
 function gemini_major_version(model_id: string): number | undefined {
@@ -586,7 +605,11 @@ async function consume_response(
         const block: ThinkingContent = { type: "thinking", thinking: "" };
         current = block;
         output.content.push(block);
-        stream.push({ type: "thinking_start", contentIndex: content_index(), partial: output });
+        stream.push({
+          type: "thinking_start",
+          contentIndex: content_index(),
+          partial: output,
+        });
       }
       if (current?.type !== "thinking") return;
       keep_signature(current, signature);
@@ -606,13 +629,22 @@ async function consume_response(
       const block: TextContent = { type: "text", text: "" };
       current = block;
       output.content.push(block);
-      stream.push({ type: "text_start", contentIndex: content_index(), partial: output });
+      stream.push({
+        type: "text_start",
+        contentIndex: content_index(),
+        partial: output,
+      });
     }
     if (current?.type !== "text") return;
     keep_signature(current, signature);
     if (delta === "") return;
     current.text += delta;
-    stream.push({ type: "text_delta", contentIndex: content_index(), delta, partial: output });
+    stream.push({
+      type: "text_delta",
+      contentIndex: content_index(),
+      delta,
+      partial: output,
+    });
   };
   const append_tool = (call: JsonRecord, signature: unknown): void => {
     end_block();
@@ -636,7 +668,11 @@ async function consume_response(
       tool_call.thoughtSignature = signature;
     output.content.push(tool_call);
     const index = content_index();
-    stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+    stream.push({
+      type: "toolcall_start",
+      contentIndex: index,
+      partial: output,
+    });
     stream.push({
       type: "toolcall_delta",
       contentIndex: index,
@@ -753,7 +789,8 @@ function map_usage(metadata: JsonRecord): Usage {
       ? Math.max(0, total - candidates - thinking)
       : read_count(metadata["promptTokenCount"]);
   const cache_read = Math.min(read_count(metadata["cachedContentTokenCount"]), prompt);
-  // Pi 的 output 已包含 reasoning。candidates 不含思考，所以这里相加。
+  // Pi 的 output 已包含 reasoning，作曲器「输出」读的就是这个数，没有单独的思考计数。
+  // candidates 不含思考，所以相加后 reasoning 仍是 output 的子集。
   return {
     input: prompt - cache_read,
     output: candidates + thinking,
@@ -781,7 +818,9 @@ function failure_message(error: unknown, signal: AbortSignal | undefined): strin
 }
 
 function aborted_error(): Error {
-  return Object.assign(new Error("Request was aborted"), { name: "AbortError" });
+  return Object.assign(new Error("Request was aborted"), {
+    name: "AbortError",
+  });
 }
 
 function is_abort_error(error: unknown): boolean {

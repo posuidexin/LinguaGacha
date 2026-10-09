@@ -74,7 +74,10 @@ describe("Agent 批量翻译模型", () => {
 
       const result = resolve_agent_batch_translation_model(config, agent_model, models);
 
-      expect(result.to_json()).toEqual({ ...agent_model.to_json(), thinking: { level: expected } });
+      expect(result.to_json()).toEqual({
+        ...agent_model.to_json(),
+        thinking: { level: expected },
+      });
       expect(agent_model.thinking.level).toBe(current);
       expect(config).toEqual(original);
     },
@@ -86,7 +89,10 @@ describe("Agent 批量翻译模型", () => {
       "a",
     );
     const config = {
-      model_selection: { agent: "b", agent_batch_translation: null as string | null },
+      model_selection: {
+        agent: "b",
+        agent_batch_translation: null as string | null,
+      },
       models: [{ ...agent_model.to_json(), thinking: { level: "HIGH" } }],
     };
     const models: PiCatalogModel[] = [
@@ -126,7 +132,10 @@ describe("Agent 模型注册", () => {
   it("Google Antigravity 用解析后的 token 发送工具请求，并在下一轮使用新 token", async () => {
     const runtime = createModels();
     let token = "current-token";
-    const resolve = vi.fn(async () => ({ apiKey: token, project_id: "project-1" }));
+    const resolve = vi.fn(async () => ({
+      apiKey: token,
+      project_id: "project-1",
+    }));
     const resolved = register_agent_model(
       runtime,
       build_config("Google", {
@@ -139,6 +148,12 @@ describe("Agent 模型注册", () => {
           extra_headers: { "X-Test": "yes" },
           extra_body_custom_enable: true,
           extra_body: { marker: true },
+        },
+        generation: {
+          temperature_custom_enable: true,
+          temperature: 0.2,
+          top_p_custom_enable: true,
+          top_p: 0.8,
         },
       }),
       TEST_REQUEST_IDENTITY,
@@ -170,7 +185,10 @@ describe("Agent 模型注册", () => {
     const lookup = {
       name: "lookup",
       description: "Look up",
-      parameters: { type: "object" as const, properties: { q: { type: "string" as const } } },
+      parameters: {
+        type: "object" as const,
+        properties: { q: { type: "string" as const } },
+      },
     };
     const first = await runtime
       .streamSimple(
@@ -189,7 +207,7 @@ describe("Agent 模型注册", () => {
     expect(captures[0]?.body).toMatchObject({
       marker: true,
       project: "project-1",
-      model: "gemini-3.1-pro",
+      model: "gemini-3.1-pro-low",
       userAgent: "antigravity",
       requestType: "agent",
     });
@@ -199,9 +217,17 @@ describe("Agent 模型注册", () => {
       role: "user",
       parts: [{ text: "rules" }],
     });
-    expect(first_request["toolConfig"]).toEqual({ functionCallingConfig: { mode: "VALIDATED" } });
+    expect(first_request["toolConfig"]).toEqual({
+      functionCallingConfig: { mode: "VALIDATED" },
+    });
     expect(JSON.stringify(first_request["tools"])).toContain("parametersJsonSchema");
     expect(first_request).not.toHaveProperty("safetySettings");
+    expect(first_request["generationConfig"]).toMatchObject({
+      temperature: 0.2,
+      topP: 0.8,
+      maxOutputTokens: 65_535,
+      thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
+    });
 
     token = "refreshed-token";
     const second = await runtime
@@ -259,7 +285,11 @@ describe("Agent 模型注册", () => {
       },
       {
         role: "user",
-        parts: [{ functionResponse: { name: "lookup", response: { output: "found" } } }],
+        parts: [
+          {
+            functionResponse: { name: "lookup", response: { output: "found" } },
+          },
+        ],
       },
     ]);
   });
@@ -329,7 +359,10 @@ describe("Agent 模型注册", () => {
     const runtime = createModels();
     const resolved = register_agent_model(
       runtime,
-      build_config("OpenAIResponses", { auth_type: "oauth", api_url: "https://api.openai.com/v1" }),
+      build_config("OpenAIResponses", {
+        auth_type: "oauth",
+        api_url: "https://api.openai.com/v1",
+      }),
       TEST_REQUEST_IDENTITY,
       catalog,
       { bind: () => "session", resolve: async () => ({ apiKey: "token" }) },
@@ -386,7 +419,11 @@ describe("Agent 模型注册", () => {
         status: "completed",
       };
       const events = [
-        { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+        {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: { ...call, arguments: "" },
+        },
         { type: "response.output_item.done", output_index: 0, item: call },
         {
           type: "response.completed",
@@ -461,7 +498,10 @@ describe("Agent 模型注册", () => {
     ]);
     expect(bodies[1]?.["input"]).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "function_call", namespace: "linguagacha" }),
+        expect.objectContaining({
+          type: "function_call",
+          namespace: "linguagacha",
+        }),
       ]),
     );
     expect(resolve.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -494,7 +534,10 @@ describe("Agent 模型注册", () => {
           maxRetries: 0,
           // 请求身份由 SDK 当前分支决定，模型注册阶段不能冻结它。
           sessionId: "sdk-summary",
-          transformHeaders: () => ({ "x-opencode-session": "sdk-summary", "User-Agent": "pi" }),
+          transformHeaders: () => ({
+            "x-opencode-session": "sdk-summary",
+            "User-Agent": "pi",
+          }),
         },
       )
       .result();
@@ -506,7 +549,10 @@ describe("Agent 模型注册", () => {
 
   it("将统一解析的 Agent 自动容量注册到运行时", async () => {
     const runtime = createModels();
-    const config = { api_format: "OpenAIResponses", model_id: "deepseek-flash" };
+    const config = {
+      api_format: "OpenAIResponses",
+      model_id: "deepseek-flash",
+    };
     const { agent_limits } = resolve_model_capability(
       Model.from_json(config, "active"),
       catalog.read_models(),
@@ -622,7 +668,10 @@ describe("Agent 模型注册", () => {
       { messages: [], reasoning_effort: "medium" },
       resolved.model,
     );
-    expect(payload).toMatchObject({ max_tokens: 123, reasoning_effort: "high" });
+    expect(payload).toMatchObject({
+      max_tokens: 123,
+      reasoning_effort: "high",
+    });
   });
 
   it("同一运行时重新注册模型时采用最新容量", async () => {
@@ -637,7 +686,10 @@ describe("Agent 模型注册", () => {
       catalog,
     );
 
-    expect(resolved.model).toMatchObject({ contextWindow: 400_000, maxTokens: 50_000 });
+    expect(resolved.model).toMatchObject({
+      contextWindow: 400_000,
+      maxTokens: 50_000,
+    });
   });
 
   it("GPT Responses 注册模型明确支持的思考等级", async () => {
@@ -743,7 +795,9 @@ describe("Agent 模型注册", () => {
     const options = api_mocks.streamSimple.mock.calls.at(-1)?.[2];
     expect(options?.headers).toEqual({ "User-Agent": TEST_USER_AGENT });
     if (options?.onPayload === undefined) throw new Error("Agent 缺少 provider payload hook");
-    expect(await options.onPayload({ messages: [] }, resolved.model)).toEqual({ messages: [] });
+    expect(await options.onPayload({ messages: [] }, resolved.model)).toEqual({
+      messages: [],
+    });
   });
 
   it("Agent 使用统一 policy 归一后的模型 URL", async () => {

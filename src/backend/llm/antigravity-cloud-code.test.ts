@@ -29,7 +29,13 @@ describe("Cloud Code Assist 翻译请求", () => {
         },
       },
     });
-    await expect(translate({ thinking_level: "HIGH", output_token_limit: 1000 })).resolves.toEqual({
+    await expect(
+      translate({
+        model_id: "gemini-3-flash",
+        thinking_level: "HIGH",
+        output_token_limit: 1000,
+      }),
+    ).resolves.toEqual({
       response_think: "先想一下",
       response_result: "译文",
       input_tokens: 4,
@@ -37,10 +43,11 @@ describe("Cloud Code Assist 翻译请求", () => {
       output_tokens: 5,
       finish: "stop",
     });
-    const request = body();
+    const request = body.body();
     expect(request["userAgent"]).toBe("antigravity");
     expect(request["requestType"]).toBe("agent");
     expect(request).not.toHaveProperty("tools");
+    expect(request["model"]).toBe("gemini-3-flash");
     expect(request["request"]).toMatchObject({
       systemInstruction: { role: "user", parts: [{ text: "规则" }] },
       generationConfig: {
@@ -50,6 +57,93 @@ describe("Cloud Code Assist 翻译请求", () => {
         thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" },
       },
     });
+  });
+
+  it("3.1 Pro 高档改写请求名，关和低档留在 low 并使用预算", async () => {
+    const high = await capture_request({
+      response: {
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      },
+    });
+    await translate({
+      model_id: "gemini-3.1-pro-high",
+      thinking_level: "HIGH",
+    });
+    expect(high.body()["model"]).toBe("gemini-pro-agent");
+    expect(high.body()["request"]).toMatchObject({
+      labels: { model_enum: "MODEL_PLACEHOLDER_M16" },
+      generationConfig: {
+        maxOutputTokens: 65_535,
+        thinkingConfig: { includeThoughts: true, thinkingBudget: 10_001 },
+      },
+    });
+    expect(generation_config(high.body())).not.toHaveProperty("thinkingLevel");
+
+    const closed = await capture_request({
+      response: {
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      },
+    });
+    await translate({
+      model_id: "gemini-3.1-pro-low",
+      thinking_level: "DEFAULT",
+    });
+    expect(closed.body()["model"]).toBe("gemini-3.1-pro-low");
+    expect(closed.body()["request"]).toMatchObject({
+      labels: { model_enum: "MODEL_PLACEHOLDER_M36" },
+      generationConfig: {
+        maxOutputTokens: 65_535,
+        thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
+      },
+    });
+    expect(generation_config(closed.body())).not.toHaveProperty("thinkingLevel");
+  });
+
+  it("Claude 按档位发送思考预算和 beta 头，关档两者都省略", async () => {
+    const high = await capture_request({
+      response: {
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      },
+    });
+    await translate({
+      model_id: "claude-sonnet-4-6",
+      thinking_level: "LOW",
+      headers: {
+        Authorization: "Bearer stolen",
+        "X-Trace": "1",
+        "Content-Type": "text/plain",
+      },
+      extra_body: { marker: true, model: "gemini-3.1-pro-high" },
+    });
+    expect(high.body()["model"]).toBe("claude-sonnet-4-6");
+    expect(high.body()["marker"]).toBe(true);
+    expect(high.body()["request"]).toMatchObject({
+      generationConfig: {
+        maxOutputTokens: 64_000,
+        thinkingConfig: { includeThoughts: true, thinkingBudget: 4_096 },
+      },
+    });
+    expect(high.headers().get("anthropic-beta")).toBe("interleaved-thinking-2025-05-14");
+    expect(high.headers().get("x-trace")).toBe("1");
+    expect(high.headers().get("authorization")).toBe("Bearer token");
+    expect(high.headers().get("content-type")).toBe("application/json");
+    expect(high.headers().get("user-agent")).toMatch(/^antigravity\/hub\//u);
+
+    const closed = await capture_request({
+      response: {
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      },
+    });
+    await translate({
+      model_id: "claude-opus-4-6-thinking",
+      thinking_level: "OFF",
+      temperature: null,
+      top_p: null,
+    });
+    expect(generation_config(closed.body())).toEqual({
+      maxOutputTokens: 64_000,
+    });
+    expect(closed.headers().get("anthropic-beta")).toBeNull();
   });
 
   it("思考 token 多于正文时分别计入，不把正文截成零", async () => {
@@ -67,25 +161,32 @@ describe("Cloud Code Assist 翻译请求", () => {
   });
 
   it("Claude 限制输出上限且不附带 Gemini 思考配置", async () => {
-    const body = await capture_request({
+    const captured = await capture_request({
       response: { candidates: [{ content: { parts: [{ text: "ok" }] } }] },
     });
     await translate({ model_id: "claude-opus-4", output_token_limit: 100_000 });
-    expect(body()).toMatchObject({
+    expect(captured.body()).toMatchObject({
       request: { generationConfig: { maxOutputTokens: 64_000 } },
     });
-    expect(
-      (body()["request"] as { generationConfig: Record<string, unknown> }).generationConfig,
-    ).not.toHaveProperty("thinkingConfig");
+    expect(generation_config(captured.body())).not.toHaveProperty("thinkingConfig");
   });
 
   it("函数调用清空正文，空文本可以重试，拦截不可重试", async () => {
     await capture_request({
       response: {
-        candidates: [{ content: { parts: [{ text: "忽略", functionCall: { name: "lookup" } }] } }],
+        candidates: [
+          {
+            content: {
+              parts: [{ text: "忽略", functionCall: { name: "lookup" } }],
+            },
+          },
+        ],
       },
     });
-    await expect(translate()).resolves.toMatchObject({ finish: "tool", response_result: "" });
+    await expect(translate()).resolves.toMatchObject({
+      finish: "tool",
+      response_result: "",
+    });
 
     await capture_request({
       response: { candidates: [{ content: { parts: [{ text: "  " }] } }] },
@@ -95,7 +196,12 @@ describe("Cloud Code Assist 翻译请求", () => {
     });
 
     await capture_request({
-      response: { promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "blocked text" } },
+      response: {
+        promptFeedback: {
+          blockReason: "SAFETY",
+          blockReasonMessage: "blocked text",
+        },
+      },
     });
     await expect(translate()).rejects.toMatchObject({
       message: "blocked text",
@@ -134,7 +240,11 @@ describe("Cloud Code Assist 翻译请求", () => {
         if (url.startsWith(`${ANTIGRAVITY_BASE_URL}/`))
           return new Response("busy", { status: 503 });
         return new Response(
-          sse({ response: { candidates: [{ content: { parts: [{ text: "ok" }] } }] } }),
+          sse({
+            response: {
+              candidates: [{ content: { parts: [{ text: "ok" }] } }],
+            },
+          }),
           {
             status: 200,
           },
@@ -168,17 +278,35 @@ function translate(
   });
 }
 
-/** 下一次生成请求返回这段 SSE，并让调用方读取实际 JSON。 */
-async function capture_request(payload: unknown): Promise<() => Record<string, unknown>> {
+/** 下一次生成请求返回这段 SSE，并让调用方读取实际 JSON 和请求头。 */
+async function capture_request(payload: unknown): Promise<{
+  body: () => Record<string, unknown>;
+  headers: () => Headers;
+}> {
   let body: Record<string, unknown> = {};
+  let headers = new Headers();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      headers = new Headers(init?.headers);
       return new Response(sse(payload), { status: 200 });
     }),
   );
-  return () => body;
+  return {
+    body: () => body,
+    headers: () => headers,
+  };
+}
+
+function generation_config(body: Record<string, unknown>): Record<string, unknown> {
+  const request = body["request"];
+  if (request === null || typeof request !== "object" || !("generationConfig" in request))
+    throw new Error("缺少 generationConfig");
+  const generation = request.generationConfig;
+  if (generation === null || typeof generation !== "object")
+    throw new Error("缺少 generationConfig");
+  return generation as Record<string, unknown>;
 }
 
 function sse(payload: unknown): string {

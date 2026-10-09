@@ -12,6 +12,7 @@ import { normalize_setting_snapshot } from "../../domain/setting";
 import * as AppErrors from "../../shared/error";
 import {
   build_request_headers,
+  read_custom_number,
   read_model_request_snapshot,
   type ModelRequestIdentity,
 } from "../llm/llm-request";
@@ -63,7 +64,9 @@ export function register_agent_model(
   if (raw_model === null) throw new AppErrors.AppError("model.not_found");
   const configured_model = Model.from_json(raw_model, String(raw_model["id"] ?? ""));
   const capability = resolve_model_capability(configured_model, catalog.read_models());
-  const snapshot = read_model_request_snapshot(raw_model, { user_agent: identity.user_agent });
+  const snapshot = read_model_request_snapshot(raw_model, {
+    user_agent: identity.user_agent,
+  });
   const api_key = snapshot.api_keys[0] ?? "no_key_required";
   const configured_name = String(raw_model["name"] ?? "").trim();
   const pi = resolve_pi_model(snapshot, capability, {
@@ -106,12 +109,16 @@ export function register_agent_model(
         const project_id = credential.project_id?.trim() ?? "";
         if (credential.apiKey.trim() === "" || project_id === "")
           throw new AppErrors.AppError("model.auth_required");
+        const temperature = read_custom_number(snapshot.generation, "temperature");
+        const top_p = read_custom_number(snapshot.generation, "top_p");
         return stream_antigravity_agent(active_model, active_context, {
           ...options,
           apiKey: credential.apiKey,
           project_id,
           headers: request_headers(options?.sessionId),
           extra_body: snapshot.extra_body,
+          ...(temperature === null ? {} : { temperature }),
+          ...(top_p === null ? {} : { top_p }),
         });
       });
     models.setProvider(
@@ -123,14 +130,20 @@ export function register_agent_model(
         auth: {
           apiKey: {
             name: "Google Antigravity",
-            check: async () => ({ type: "oauth", source: "Google Antigravity" }),
+            check: async () => ({
+              type: "oauth",
+              source: "Google Antigravity",
+            }),
             resolve: async () => ({
               auth: { apiKey: "google-antigravity" },
               source: "Google Antigravity",
             }),
           },
         },
-        api: { stream: authenticated_stream, streamSimple: authenticated_stream },
+        api: {
+          stream: authenticated_stream,
+          streamSimple: authenticated_stream,
+        },
       }),
     );
   } else if (snapshot.oauth_provider === "chatgpt") {
@@ -208,7 +221,10 @@ export function register_agent_model(
         auth: {
           apiKey: {
             name: provider_name,
-            resolve: async () => ({ auth: { apiKey: api_key }, source: "LinguaGacha" }),
+            resolve: async () => ({
+              auth: { apiKey: api_key },
+              source: "LinguaGacha",
+            }),
           },
         },
         api: { stream: configured_stream, streamSimple: configured_stream },
