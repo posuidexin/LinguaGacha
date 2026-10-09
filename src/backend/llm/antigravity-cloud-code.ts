@@ -19,8 +19,8 @@ const ONBOARD_POLL_INTERVAL_MS = 1_000;
 const LOAD_METADATA = Object.freeze({ ideType: "ANTIGRAVITY" });
 const DEFAULT_ANTIGRAVITY_VERSION = "2.19.1";
 const DEFAULT_ANTIGRAVITY_CL = "963137146";
-const CLAUDE_MAX_OUTPUT_TOKENS = 64_000;
-const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+export const CLAUDE_MAX_OUTPUT_TOKENS = 64_000;
+export const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
 const INT63_MASK = (1n << 63n) - 1n;
 // 上游发现客户端会跳过这些内部或已下线的 id。
 const DISCOVERY_DENYLIST = new Set(["chat_20706", "chat_23310", "gemini-2.5-pro"]);
@@ -121,7 +121,6 @@ export async function request_antigravity_text(options: {
     });
   const events = await request_sse(
     options.base_url,
-    "/v1internal:streamGenerateContent?alt=sse",
     build_translation_request(options),
     options.access_token,
     options.signal,
@@ -279,7 +278,7 @@ function build_translation_request(options: {
   const trajectory_id = randomUUID();
   const request: JsonRecord = {
     contents: [{ role: "user", parts: [{ text: user }] }],
-    sessionId: derive_session_id(user),
+    sessionId: derive_antigravity_session_id(user),
     labels: {
       last_step_index: "1",
       trajectory_id,
@@ -300,7 +299,7 @@ function build_translation_request(options: {
 }
 
 /** 会话号沿用客户端的负十进制形式，避免空会话被控制面拒绝。 */
-function derive_session_id(text: string): string {
+export function derive_antigravity_session_id(text: string): string {
   const digest = createHash("sha256").update(text).digest();
   let value = 0n;
   for (let index = 0; index < 8; index += 1) value = (value << 8n) | BigInt(digest[index] ?? 0);
@@ -384,17 +383,75 @@ async function request_json(
   access_token: string,
   signal: AbortSignal | undefined,
 ): Promise<JsonRecord> {
-  return request_with_fallback(base_url, path, body, access_token, signal, false);
+  return request_with_fallback(base_url, path, body, access_token, signal);
+}
+
+const GENERATE_PATH = "/v1internal:streamGenerateContent?alt=sse";
+
+/** 生成流在读到正文前可以换备用入口；调用方负责消费 body。 */
+export async function open_antigravity_generate_stream(options: {
+  base_url: string;
+  body: JsonRecord;
+  access_token: string;
+  signal?: AbortSignal;
+  headers?: Readonly<Record<string, string>>;
+  fetch?: typeof globalThis.fetch;
+}): Promise<Response> {
+  const endpoints = endpoint_order(options.base_url);
+  const request_fetch = options.fetch ?? fetch;
+  let last_error: unknown;
+  for (const [index, endpoint] of endpoints.entries()) {
+    try {
+      const request: RequestInit = {
+        method: "POST",
+        headers: {
+          ...antigravity_headers(options.access_token, true),
+          ...options.headers,
+          Authorization: `Bearer ${options.access_token}`,
+          "User-Agent": get_antigravity_user_agent(),
+        },
+        body: JSON.stringify(options.body),
+        redirect: "error",
+      };
+      if (options.signal !== undefined) request.signal = options.signal;
+      const response = await request_fetch(`${endpoint}${GENERATE_PATH}`, request);
+      if (!response.ok)
+        throw await read_provider_response_error(response, {
+          retryable: response.status === 429 || response.status >= 500,
+        });
+      return response;
+    } catch (error) {
+      if (is_abort_error(error) || options.signal?.aborted === true) throw error;
+      last_error = error;
+      if (!can_failover(error, index, endpoints.length)) throw error;
+    }
+  }
+  throw_last(last_error);
 }
 
 async function request_sse(
   base_url: string,
-  path: string,
   body: JsonRecord,
   access_token: string,
   signal: AbortSignal,
 ): Promise<unknown[]> {
-  return request_with_fallback(base_url, path, body, access_token, signal, true);
+  const response = await open_antigravity_generate_stream({
+    base_url,
+    body,
+    access_token,
+    signal,
+  });
+  return read_sse_events(await response.text());
+}
+
+function can_failover(error: unknown, index: number, count: number): boolean {
+  if (index >= count - 1) return false;
+  const status = read_status(error);
+  return status === undefined || status === 429 || status >= 500;
+}
+
+function is_abort_error(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 async function request_with_fallback(
@@ -403,55 +460,23 @@ async function request_with_fallback(
   body: JsonRecord,
   access_token: string,
   signal: AbortSignal | undefined,
-  sse: false,
-): Promise<JsonRecord>;
-async function request_with_fallback(
-  base_url: string,
-  path: string,
-  body: JsonRecord,
-  access_token: string,
-  signal: AbortSignal | undefined,
-  sse: true,
-): Promise<unknown[]>;
-async function request_with_fallback(
-  base_url: string,
-  path: string,
-  body: JsonRecord,
-  access_token: string,
-  signal: AbortSignal | undefined,
-  sse: boolean,
-): Promise<JsonRecord | unknown[]> {
+): Promise<JsonRecord> {
   const endpoints = endpoint_order(base_url);
   let last_error: unknown;
   for (const [index, endpoint] of endpoints.entries()) {
     try {
-      return sse
-        ? await request_url(
-            `${endpoint}${path}`,
-            body,
-            access_token,
-            signal,
-            undefined,
-            "POST",
-            true,
-          )
-        : await request_url(
-            `${endpoint}${path}`,
-            body,
-            access_token,
-            signal,
-            undefined,
-            "POST",
-            false,
-          );
+      return await request_url(`${endpoint}${path}`, body, access_token, signal, undefined, "POST");
     } catch (error) {
       last_error = error;
-      const status = read_status(error);
-      const transient = status === undefined || status === 429 || status >= 500;
-      if (!transient || index === endpoints.length - 1) throw error;
+      if (!can_failover(error, index, endpoints.length)) throw error;
     }
   }
-  throw last_error;
+  throw_last(last_error);
+}
+
+function throw_last(error: unknown): never {
+  if (error !== undefined) throw error;
+  throw create_provider_error("Cloud Code Assist request failed", undefined, { retryable: true });
 }
 
 function endpoint_order(base_url: string): readonly string[] {
@@ -468,7 +493,7 @@ async function request_json_url(
   timeout_ms?: number,
   method: "GET" | "POST" = "POST",
 ): Promise<JsonRecord> {
-  return request_url(url, body, access_token, signal, timeout_ms, method, false);
+  return request_url(url, body, access_token, signal, timeout_ms, method);
 }
 
 async function request_url(
@@ -478,30 +503,11 @@ async function request_url(
   signal: AbortSignal | undefined,
   timeout_ms: number | undefined,
   method: "GET" | "POST",
-  sse: false,
-): Promise<JsonRecord>;
-async function request_url(
-  url: string,
-  body: JsonRecord | undefined,
-  access_token: string,
-  signal: AbortSignal | undefined,
-  timeout_ms: number | undefined,
-  method: "GET" | "POST",
-  sse: true,
-): Promise<unknown[]>;
-async function request_url(
-  url: string,
-  body: JsonRecord | undefined,
-  access_token: string,
-  signal: AbortSignal | undefined,
-  timeout_ms: number | undefined,
-  method: "GET" | "POST",
-  sse: boolean,
-): Promise<JsonRecord | unknown[]> {
+): Promise<JsonRecord> {
   signal?.throwIfAborted();
   const request: RequestInit = {
     method,
-    headers: antigravity_headers(access_token, sse),
+    headers: antigravity_headers(access_token, false),
     redirect: "error",
   };
   if (body !== undefined) request.body = JSON.stringify(body);
@@ -512,7 +518,6 @@ async function request_url(
     throw await read_provider_response_error(response, {
       retryable: response.status === 429 || response.status >= 500,
     });
-  if (sse) return read_sse_events(await response.text());
   const data: unknown = await response.json();
   if (!is_json_record(data))
     throw create_provider_error("Invalid Cloud Code Assist response", undefined, {
