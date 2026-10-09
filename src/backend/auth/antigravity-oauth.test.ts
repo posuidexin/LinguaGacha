@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { OAUTH_CALLBACK_REASONS } from "../../shared/model-auth";
 import {
   refresh_antigravity_credential,
   start_antigravity_login,
@@ -133,6 +135,141 @@ describe("Google Antigravity 浏览器授权", () => {
         project_id: "projects/123",
         clientId: TEST_CLIENT_ID,
       });
+    } finally {
+      controller.abort();
+      await login.completion.catch(() => undefined);
+    }
+  });
+
+  it("粘贴整条回调或只粘授权码都用同一 PKCE 换项目，后到的本机回调不再领取", async () => {
+    const bodies: string[] = [];
+    let release_token: () => void = () => undefined;
+    const hold_token = new Promise<void>((resolve) => {
+      release_token = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes("oauth2.googleapis.com/token")) {
+          bodies.push(String(init?.body ?? ""));
+          await hold_token;
+        }
+        return json_for(String(input), "ready");
+      }),
+    );
+    const controller = new AbortController();
+    const login = await start_antigravity_login({
+      host_id: "host",
+      signal: controller.signal,
+      port: 0,
+    });
+    try {
+      const authorize = new URL(login.url);
+      const state = authorize.searchParams.get("state") ?? "";
+      const redirect = authorize.searchParams.get("redirect_uri") ?? "";
+      expect(() => login.submit_callback(`${redirect}?code=wrong&state=other-state`)).toThrow(
+        expect.objectContaining({
+          public_details: { reason: OAUTH_CALLBACK_REASONS.state_mismatch },
+        }),
+      );
+      login.submit_callback(`浏览器打不开，请手动复制 ${redirect}?code=pasted-code&state=${state}`);
+      expect(() => login.submit_callback("second-code")).toThrow(
+        expect.objectContaining({
+          public_details: { reason: OAUTH_CALLBACK_REASONS.already_accepted },
+        }),
+      );
+      expect((await post_callback(login.url, { state, code: "browser-code" })).status).toBe(400);
+      release_token();
+      await expect(login.completion).resolves.toMatchObject({
+        access: "access-token",
+        project_id: "projects/123",
+        email: "user@example.test",
+      });
+      const token = new URLSearchParams(bodies[0]);
+      expect(token.get("code")).toBe("pasted-code");
+      expect(token.get("redirect_uri")).toBe(redirect);
+      expect(
+        createHash("sha256")
+          .update(token.get("code_verifier") ?? "")
+          .digest("base64url"),
+      ).toBe(authorize.searchParams.get("code_challenge"));
+    } finally {
+      release_token();
+      controller.abort();
+      await login.completion.catch(() => undefined);
+    }
+  });
+
+  it("只粘授权码也能登录，本机回调先到时粘贴不再替换授权码", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes("oauth2.googleapis.com/token"))
+          bodies.push(String(init?.body ?? ""));
+        return json_for(String(input), "ready");
+      }),
+    );
+    const controller = new AbortController();
+    const login = await start_antigravity_login({
+      host_id: "host",
+      signal: controller.signal,
+      port: 0,
+    });
+    try {
+      const authorize = new URL(login.url);
+      const state = authorize.searchParams.get("state") ?? "";
+      expect((await post_callback(login.url, { state, code: "browser-code" })).status).toBe(200);
+      expect(() => login.submit_callback("pasted-too-late")).toThrow(
+        expect.objectContaining({
+          public_details: { reason: OAUTH_CALLBACK_REASONS.already_accepted },
+        }),
+      );
+      await expect(login.completion).resolves.toMatchObject({ project_id: "projects/123" });
+      expect(new URLSearchParams(bodies[0]).get("code")).toBe("browser-code");
+    } finally {
+      controller.abort();
+      await login.completion.catch(() => undefined);
+    }
+
+    const code_only = new AbortController();
+    const second = await start_antigravity_login({
+      host_id: "host",
+      signal: code_only.signal,
+      port: 0,
+    });
+    try {
+      second.submit_callback("bare-code");
+      await expect(second.completion).resolves.toMatchObject({ project_id: "projects/123" });
+      expect(new URLSearchParams(bodies.at(-1)).get("code")).toBe("bare-code");
+    } finally {
+      code_only.abort();
+      await second.completion.catch(() => undefined);
+    }
+  });
+
+  it("粘贴拒绝链接只取消这一轮，空内容和无法识别的文本不领取回调", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const controller = new AbortController();
+    const login = await start_antigravity_login({
+      host_id: "host",
+      signal: controller.signal,
+      port: 0,
+    });
+    const cancelled = expect(login.completion).rejects.toMatchObject({ code: "runtime.cancelled" });
+    try {
+      const authorize = new URL(login.url);
+      const state = authorize.searchParams.get("state") ?? "";
+      const redirect = authorize.searchParams.get("redirect_uri") ?? "";
+      expect(() => login.submit_callback("   ")).toThrow(
+        expect.objectContaining({ public_details: { reason: OAUTH_CALLBACK_REASONS.empty } }),
+      );
+      expect(() => login.submit_callback("not a callback")).toThrow(
+        expect.objectContaining({ public_details: { reason: OAUTH_CALLBACK_REASONS.unreadable } }),
+      );
+      login.submit_callback(`${redirect}?error=access_denied&state=${state}`);
+      await cancelled;
+      expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
     } finally {
       controller.abort();
       await login.completion.catch(() => undefined);

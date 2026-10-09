@@ -45,3 +45,16 @@ export type ChatGPTAuthSnapshot = OAuthAccountSnapshot;
 export type ChatGPTLoginResponse = OAuthLoginResponse;
 
 export const MODEL_AUTH_CHANGED_EVENT_TOPIC = "model.auth_changed";
+
+/** 手动回调的拒绝原因。页面对这些值显示本地文案，不直接展示英文 message。 */
+export const OAUTH_CALLBACK_REASONS = {
+  empty: "empty",
+  unreadable: "unreadable",
+  state_mismatch: "state_mismatch",
+  already_accepted: "already_accepted",
+  missing: "missing",
+  unsupported: "unsupported",
+} as const;
+
+export type OAuthCallbackReason =
+  (typeof OAUTH_CALLBACK_REASONS)[keyof typeof OAUTH_CALLBACK_REASONS];

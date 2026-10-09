@@ -7,6 +7,7 @@ import type {
   ModelAuthSnapshot,
   OAuthLoginSnapshot,
 } from "@shared/model-auth";
+import { DesktopApiError } from "@frontend/app/desktop/desktop-api";
 import { ChatGPTLoginDialog } from "./dialogs/chatgpt-login-dialog";
 import { useChatGPTLogin } from "./use-chatgpt-login";
 
@@ -128,6 +129,7 @@ describe("ChatGPT 登录交互", () => {
     await click("model_page.auth.open_login_page");
     expect(mocks.open).toHaveBeenCalledWith(response.url);
     expect(button("app.action.cancel")).toBeDefined();
+    expect(dialog.textContent).not.toContain("model_page.auth.paste_callback");
   });
 
   it("准备期间取消等待启动收尾，重开以后旧结果无法结束新窗口", async () => {
@@ -265,5 +267,49 @@ describe("ChatGPT 登录交互", () => {
     });
     expect(document.body.textContent).toContain("model_page.auth.antigravity_personal_use");
     expect(document.body.textContent).toContain("model_page.auth.provider_google_antigravity");
+    expect(button("model_page.auth.paste_callback_submit")).toBeDefined();
+    const paste = [...document.querySelectorAll("input")].find((item) => !item.readOnly);
+    if (paste === undefined) throw new Error("缺少回调输入框");
+    await click("model_page.auth.paste_callback_submit");
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "model_page.auth.paste_callback_empty",
+    );
+    expect(mocks.api).not.toHaveBeenCalledWith("/api/models/auth/callback", expect.anything());
+
+    await act(async () => {
+      set_input_value(paste, "http://127.0.0.1:51121/oauth-callback?code=abc&state=state");
+    });
+    mocks.api.mockImplementation(async (route: string) => {
+      if (route.endsWith("/callback"))
+        throw new DesktopApiError({
+          code: "request.validation_failed",
+          message: "The callback state does not match this sign-in.",
+          details: { reason: "state_mismatch" },
+        });
+      return response;
+    });
+    await click("model_page.auth.paste_callback_submit");
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "model_page.auth.paste_callback_state",
+    );
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+    mocks.api.mockImplementation(async (route: string) =>
+      route.endsWith("/callback")
+        ? { snapshot: account({ revision: 4, login: { id: "first", status: "pending" } }) }
+        : response,
+    );
+    await click("model_page.auth.paste_callback_submit");
+    expect(mocks.api).toHaveBeenCalledWith("/api/models/auth/callback", {
+      provider: "google-antigravity",
+      id: "first",
+      callback: "http://127.0.0.1:51121/oauth-callback?code=abc&state=state",
+    });
+    expect(button("model_page.auth.paste_callback_submit").disabled).toBe(true);
   });
 });
+
+function set_input_value(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}

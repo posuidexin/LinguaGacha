@@ -31,10 +31,11 @@ export interface OAuthAccountProtocol<C extends OAuthSessionCredential> {
   file_name: string;
   credential_label: string;
   timeout_message: string;
-  start_login(options: {
-    host_id: string;
-    signal: AbortSignal;
-  }): Promise<{ url: string; completion: Promise<C> }>;
+  start_login(options: { host_id: string; signal: AbortSignal }): Promise<{
+    url: string;
+    completion: Promise<C>;
+    submit_callback?(callback: string): void;
+  }>;
   refresh(credential: C, signal: AbortSignal): Promise<C>;
   revoke(credential: C, signal: AbortSignal): Promise<void>;
   present(credential: C): ResolvedOAuthCredential;
@@ -45,6 +46,7 @@ type LoginAttempt = {
   controller: AbortController; // 当前授权尝试的取消源。
   authorization: PromiseWithResolvers<string>; // 首次启动期间的重复点击等待同一授权地址。
   completion: Promise<void>; // 从监听启动覆盖到凭据落盘和资源清理。
+  submit_callback: ((callback: string) => void) | null; // 提供方可选的手动回调；本机监听仍由 completion 收尾。
 };
 
 /**
@@ -174,6 +176,7 @@ export class OAuthAccountService<C extends OAuthSessionCredential> {
         controller: new AbortController(),
         authorization: Promise.withResolvers<string>(),
         completion: Promise.resolve(),
+        submit_callback: null,
       };
       this.pending = attempt;
       this.login_snapshot = { id: attempt.id, status: "pending" };
@@ -204,6 +207,8 @@ export class OAuthAccountService<C extends OAuthSessionCredential> {
         host_id: account.host_id,
         signal,
       });
+      // 地址交给页面前先挂上手动入口，避免用户粘贴时这一轮还不能领取回调。
+      attempt.submit_callback = login.submit_callback ?? null;
       url_delivered = true;
       attempt.authorization.resolve(login.url);
       const credential = await login.completion;
@@ -252,6 +257,27 @@ export class OAuthAccountService<C extends OAuthSessionCredential> {
       if (!url_delivered)
         attempt.authorization.reject(failure ?? new AppError("runtime.cancelled"));
     }
+  }
+
+  /**
+   * 把用户粘贴的回调交给当前尝试。
+   * 本机监听和这次粘贴谁先领取授权码，由提供方协议决定；这里只校验尝试仍在进行。
+   */
+  public submit_callback(id: unknown, callback: unknown): void {
+    if (typeof id !== "string" || id === "" || typeof callback !== "string")
+      throw new AppError("request.validation_failed");
+    const attempt = this.pending;
+    if (attempt?.id !== id)
+      throw new AppError("request.validation_failed", {
+        message: "There is no sign-in waiting for a callback.",
+        public_details: { reason: "missing" },
+      });
+    if (attempt.submit_callback === null)
+      throw new AppError("request.validation_failed", {
+        message: "Manual callback is only available for Google Antigravity.",
+        public_details: { reason: "unsupported" },
+      });
+    attempt.submit_callback(callback);
   }
 
   /** 只取消指定授权；旧窗口迟到的取消请求不能影响新窗口。 */

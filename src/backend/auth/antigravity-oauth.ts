@@ -13,6 +13,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { AppError } from "../../shared/error";
+import { OAUTH_CALLBACK_REASONS, type OAuthCallbackReason } from "../../shared/model-auth";
 import { is_json_record } from "../../domain/json";
 import { create_provider_error, read_provider_response_error } from "../network/provider-error";
 import { discover_antigravity_project } from "../llm/antigravity-cloud-code";
@@ -49,12 +50,18 @@ export interface AntigravityCredential extends OAuthCredential {
   session_id: string;
 }
 
+export interface AntigravityLoginStart {
+  url: string;
+  completion: Promise<AntigravityCredential>;
+  submit_callback(callback: string): void;
+}
+
 /** 浏览器授权完成后立刻开通 Cloud Code 项目，失败则不保存半成品凭据。 */
 export async function start_antigravity_login(options: {
   host_id: string;
   signal: AbortSignal;
   port?: number;
-}): Promise<{ url: string; completion: Promise<AntigravityCredential> }> {
+}): Promise<AntigravityLoginStart> {
   const client = read_oauth_client();
   const { signal } = options;
   signal.throwIfAborted();
@@ -64,38 +71,55 @@ export async function start_antigravity_login(options: {
   const callback = Promise.withResolvers<{ code: string }>();
   void callback.promise.catch(() => undefined);
   let accepted = false;
+  // 本机监听和手动粘贴只领取一次。先到的授权码进入换 token，后到的不再改结果。
+  const accept = (apply: () => void): boolean => {
+    if (accepted) return false;
+    accepted = true;
+    apply();
+    return true;
+  };
+  const submit_callback = (raw: string): void => {
+    const parsed = read_pasted_callback(raw, state);
+    const claimed = accept(() => {
+      if (parsed.kind === "denied") callback.reject(new AppError("runtime.cancelled"));
+      else if (parsed.kind === "failed") callback.reject(auth_error(parsed.message));
+      else callback.resolve({ code: parsed.code });
+    });
+    if (!claimed) throw callback_rejected(OAUTH_CALLBACK_REASONS.already_accepted);
+  };
   const server = createServer((request, response) => {
     const url = URL.parse(request.url ?? "/", "http://127.0.0.1");
-    if (
-      accepted ||
-      url === null ||
-      url.pathname !== CALLBACK_PATH ||
-      url.searchParams.get("state") !== state
-    ) {
+    if (url === null || url.pathname !== CALLBACK_PATH || url.searchParams.get("state") !== state) {
       response.writeHead(400).end("Invalid authorization callback.");
       return;
     }
-    accepted = true;
     const error = url.searchParams.get("error");
+    const code = url.searchParams.get("code");
     if (error === "access_denied") {
+      if (!accept(() => callback.reject(new AppError("runtime.cancelled")))) {
+        response.writeHead(400).end("Invalid authorization callback.");
+        return;
+      }
       response.writeHead(200).end("Sign-in cancelled. You can close this window.");
-      callback.reject(new AppError("runtime.cancelled"));
       return;
     }
-    const code = url.searchParams.get("code");
     if (error || !code) {
+      const message =
+        url.searchParams.get("error_description") ?? error ?? "Invalid authorization callback.";
+      if (!accept(() => callback.reject(auth_error(message)))) {
+        response.writeHead(400).end("Invalid authorization callback.");
+        return;
+      }
       response.writeHead(400).end("Authorization failed. Return to LinguaGacha.");
-      callback.reject(
-        auth_error(
-          url.searchParams.get("error_description") ?? error ?? "Invalid authorization callback.",
-        ),
-      );
+      return;
+    }
+    if (!accept(() => callback.resolve({ code }))) {
+      response.writeHead(400).end("Invalid authorization callback.");
       return;
     }
     response
       .writeHead(200, { "content-type": "text/plain; charset=utf-8" })
       .end("Return to LinguaGacha to view the sign-in result.");
-    callback.resolve({ code });
   });
   const cancel = (): void => {
     callback.reject(new AppError("runtime.cancelled"));
@@ -167,7 +191,7 @@ export async function start_antigravity_login(options: {
       server.closeAllConnections();
     }
   })();
-  return { url: url.toString(), completion };
+  return { url: url.toString(), completion, submit_callback };
 }
 
 /** 刷新保持项目与会话身份。Google 不一定返回新的 refresh token。 */
@@ -281,4 +305,85 @@ function read_oauth_client(): { client_id: string; client_secret: string } {
 
 function auth_error(reason: string): AppError {
   return create_provider_error(reason, undefined, { retryable: false });
+}
+
+type PastedCallback =
+  | { kind: "code"; code: string }
+  | { kind: "denied" }
+  | { kind: "failed"; message: string };
+
+/** 整段地址栏 URL 要核对 state；只粘授权码时沿用这一轮已经发出的 state 和 PKCE。 */
+function read_pasted_callback(raw: string, expected_state: string): PastedCallback {
+  const text = raw.trim();
+  if (text === "") throw callback_rejected(OAUTH_CALLBACK_REASONS.empty);
+  if (!looks_like_callback_text(text)) {
+    if (/\s/u.test(text)) throw callback_rejected(OAUTH_CALLBACK_REASONS.unreadable);
+    return { kind: "code", code: text };
+  }
+  const url = callback_url(text);
+  if (url === null) throw callback_rejected(OAUTH_CALLBACK_REASONS.unreadable);
+  if (url.searchParams.get("state") !== expected_state)
+    throw callback_rejected(OAUTH_CALLBACK_REASONS.state_mismatch);
+  const error = url.searchParams.get("error");
+  if (error === "access_denied") return { kind: "denied" };
+  const code = url.searchParams.get("code")?.trim() ?? "";
+  if (error !== null || code === "") {
+    return {
+      kind: "failed",
+      message:
+        url.searchParams.get("error_description") ?? error ?? "Invalid authorization callback.",
+    };
+  }
+  return { kind: "code", code };
+}
+
+function looks_like_callback_text(text: string): boolean {
+  return (
+    text.includes("://") ||
+    text.includes("oauth-callback") ||
+    text.includes("?") ||
+    /(?:^|[?&])(?:code|state|error)=/u.test(text)
+  );
+}
+
+function callback_url(text: string): URL | null {
+  const embedded = /https?:\/\/\S+/u.exec(text);
+  if (embedded?.[0] !== undefined) {
+    try {
+      return new URL(embedded[0].replace(/[)\].,;]+$/u, ""));
+    } catch {
+      return null;
+    }
+  }
+  if (text.startsWith("/")) {
+    try {
+      return new URL(text, "http://127.0.0.1");
+    } catch {
+      return null;
+    }
+  }
+  const query = text.startsWith("?") ? text.slice(1) : text;
+  try {
+    return new URL(`http://127.0.0.1${CALLBACK_PATH}?${query}`);
+  } catch {
+    return null;
+  }
+}
+
+function callback_rejected(
+  reason: Extract<
+    OAuthCallbackReason,
+    "empty" | "unreadable" | "state_mismatch" | "already_accepted"
+  >,
+): AppError {
+  const message = {
+    empty: "Paste the callback URL or authorization code.",
+    unreadable: "The callback text does not contain an authorization code.",
+    state_mismatch: "The callback state does not match this sign-in.",
+    already_accepted: "This sign-in already received a callback.",
+  }[reason];
+  return new AppError("request.validation_failed", {
+    message,
+    public_details: { reason },
+  });
 }

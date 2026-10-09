@@ -13,6 +13,16 @@ export const de_de_model_page = {
     provider_google_antigravity: "Google Antigravity",
     antigravity_personal_use:
       "Diese Anmeldung nutzt die Cloud Code Assist-Schnittstelle von Antigravity. Das verstößt gegen die Nutzungsbedingungen von Antigravity, kann zur Kontosperre führen und ist nur für den persönlichen Gebrauch.",
+    paste_callback: "Rückruf-Link",
+    paste_callback_placeholder: "Gesamte Rückruf-URL oder nur den Autorisierungscode einfügen",
+    paste_callback_submit: "Mit Rückruf anmelden",
+    paste_callback_hint:
+      "Wenn der Browser die lokale Rückrufseite nicht öffnen kann, fügen Sie die vollständige Adresszeile hier ein. Nur der Autorisierungscode genügt ebenfalls.",
+    paste_callback_empty: "Fügen Sie die Rückruf-URL oder den Autorisierungscode ein.",
+    paste_callback_unreadable: "Dieser Text enthält keinen Autorisierungscode.",
+    paste_callback_state: "Der Rückruf-State passt nicht zu dieser Anmeldung.",
+    paste_callback_used: "Diese Anmeldung hat bereits einen Rückruf erhalten.",
+    paste_callback_missing: "Es wartet keine Anmeldung auf einen Rückruf.",
   },
   title: "Modellverwaltung",
   category: {

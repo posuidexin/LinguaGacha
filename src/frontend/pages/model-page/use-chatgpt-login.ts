@@ -1,20 +1,30 @@
 import { push_error_toast, push_toast } from "@frontend/app/feedback/desktop-toast";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { api_fetch, DesktopApiError, open_external_url } from "@frontend/app/desktop/desktop-api";
-import { useI18n } from "@frontend/app/locale/locale-context";
+import { useI18n, type LocaleKey } from "@frontend/app/locale/locale-context";
 
 import {
   apply_model_auth_snapshot,
   useModelAuthSnapshot,
 } from "@frontend/app/state/model-auth-store";
 import type { OAuthProvider } from "@domain/model";
-import type {
-  ModelAuthLoginResponse,
-  ModelAuthSnapshot,
-  OAuthLoginSnapshot,
+import {
+  OAUTH_CALLBACK_REASONS,
+  type ModelAuthLoginResponse,
+  type ModelAuthSnapshot,
+  type OAuthCallbackReason,
+  type OAuthLoginSnapshot,
 } from "@shared/model-auth";
 
 const COPIED_FEEDBACK_MS = 2_000;
+const CALLBACK_ERROR_KEYS = {
+  [OAUTH_CALLBACK_REASONS.empty]: "model_page.auth.paste_callback_empty",
+  [OAUTH_CALLBACK_REASONS.unreadable]: "model_page.auth.paste_callback_unreadable",
+  [OAUTH_CALLBACK_REASONS.state_mismatch]: "model_page.auth.paste_callback_state",
+  [OAUTH_CALLBACK_REASONS.already_accepted]: "model_page.auth.paste_callback_used",
+  [OAUTH_CALLBACK_REASONS.missing]: "model_page.auth.paste_callback_missing",
+  [OAUTH_CALLBACK_REASONS.unsupported]: "model_page.auth.paste_callback_missing",
+} as const satisfies Record<OAuthCallbackReason, LocaleKey>;
 type LoginOperation = {
   provider: OAuthProvider; // 取消和结果都回到发起登录的那个账户。
   request: Promise<ModelAuthLoginResponse>; // 准备期间取消时，仍需取得后端授权 ID。
@@ -33,6 +43,10 @@ export function useChatGPTLogin() {
   const [url, set_url] = useState<string | null>(null);
   const [open, set_open] = useState(false);
   const [copied, set_copied] = useState(false);
+  const [callback_text, set_callback_text] = useState("");
+  const [callback_error, set_callback_error] = useState<string | null>(null);
+  const [callback_busy, set_callback_busy] = useState(false);
+  const [callback_accepted, set_callback_accepted] = useState(false);
 
   /** 本地调用与授权失败共用项目错误文案规则。 */
   function report_error(error: unknown): void {
@@ -53,6 +67,10 @@ export function useChatGPTLogin() {
       set_open(false);
       set_url(null);
       set_copied(false);
+      set_callback_text("");
+      set_callback_error(null);
+      set_callback_busy(false);
+      set_callback_accepted(false);
     }
   }
 
@@ -69,6 +87,10 @@ export function useChatGPTLogin() {
       cancelled: false,
     };
     operation.current = current;
+    set_callback_text("");
+    set_callback_error(null);
+    set_callback_busy(false);
+    set_callback_accepted(false);
     set_busy(true);
     set_open(true);
     try {
@@ -162,6 +184,48 @@ export function useChatGPTLogin() {
     }
   }
 
+  /** 输入变化清掉上一次校验，避免旧错误贴在新内容上。 */
+  function change_callback(value: string): void {
+    set_callback_text(value);
+    set_callback_error(null);
+  }
+
+  /** 校验失败留在弹窗里；领取成功后等登录结果关闭窗口。 */
+  async function submit_callback(): Promise<void> {
+    const current = operation.current;
+    if (
+      current === null ||
+      current.cancelled ||
+      current.id === null ||
+      current.provider !== "google-antigravity" ||
+      callback_busy ||
+      callback_accepted
+    )
+      return;
+    const text = callback_text.trim();
+    if (text === "") {
+      set_callback_error(t(CALLBACK_ERROR_KEYS[OAUTH_CALLBACK_REASONS.empty]));
+      return;
+    }
+    set_callback_busy(true);
+    set_callback_error(null);
+    try {
+      const result = await api_fetch<{ snapshot: ModelAuthSnapshot }>("/api/models/auth/callback", {
+        provider: current.provider,
+        id: current.id,
+        callback: text,
+      });
+      if (operation.current !== current || current.cancelled || !mounted.current) return;
+      apply_model_auth_snapshot(result.snapshot);
+      set_callback_accepted(true);
+    } catch (error) {
+      if (operation.current !== current || current.cancelled || !mounted.current) return;
+      set_callback_error(callback_error_text(error, t));
+    } finally {
+      if (operation.current === current && mounted.current) set_callback_busy(false);
+    }
+  }
+
   /** 系统打开失败保留当前授权，供用户重试或复制链接。 */
   async function login(): Promise<void> {
     if (url === null) return;
@@ -172,5 +236,39 @@ export function useChatGPTLogin() {
     }
   }
 
-  return { open, busy, url, copied, provider, start, cancel, copy, login };
+  return {
+    open,
+    busy,
+    url,
+    copied,
+    provider,
+    callback_text,
+    callback_error,
+    callback_busy,
+    callback_accepted,
+    start,
+    cancel,
+    copy,
+    login,
+    change_callback,
+    submit_callback,
+  };
+}
+
+function is_callback_reason(value: unknown): value is OAuthCallbackReason {
+  return typeof value === "string" && Object.hasOwn(CALLBACK_ERROR_KEYS, value);
+}
+
+function callback_error_text(
+  error: unknown,
+  translate: (key: LocaleKey, params?: Record<string, string>) => string,
+): string {
+  if (error instanceof DesktopApiError) {
+    const reason = error.details["reason"];
+    if (is_callback_reason(reason)) return translate(CALLBACK_ERROR_KEYS[reason]);
+    return error.message;
+  }
+  return error instanceof Error
+    ? error.message
+    : translate(CALLBACK_ERROR_KEYS[OAUTH_CALLBACK_REASONS.unreadable]);
 }

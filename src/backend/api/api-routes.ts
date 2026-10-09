@@ -231,6 +231,9 @@ export function register_api_routes(context: ApiRouteContext): void {
     snapshot: services.modelAuth.snapshot(),
   }));
   context.postJson("/api/models/auth/login", (body) => services.modelAuth.login(body["provider"]));
+  context.postJson("/api/models/auth/callback", (body) =>
+    services.modelAuth.submit_callback(body["provider"], body["id"], body["callback"]),
+  );
   context.postJson("/api/models/auth/cancel", (body) =>
     services.modelAuth.cancel_login(body["provider"], body["id"]),
   );

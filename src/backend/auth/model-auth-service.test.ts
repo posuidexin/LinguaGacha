@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../../shared/error";
+import { OAUTH_CALLBACK_REASONS } from "../../shared/model-auth";
 import { AppPathService } from "../app/app-path-service";
 import { RuntimeOperationGate } from "../runtime-operation-gate";
 import * as antigravity_oauth from "./antigravity-oauth";
@@ -29,7 +30,11 @@ describe("模型账户入口", () => {
       pending_login<ChatGPTCredential>(signal, "https://auth.openai.com/authorize"),
     );
     vi.spyOn(antigravity_oauth, "start_antigravity_login").mockImplementation(({ signal }) =>
-      pending_login<AntigravityCredential>(signal, "https://accounts.google.com/o/oauth2/v2/auth"),
+      pending_login<AntigravityCredential>(
+        signal,
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        () => undefined,
+      ),
     );
     const initial = service.snapshot();
     expect(service.snapshot().revision).toBe(initial.revision);
@@ -48,6 +53,44 @@ describe("模型账户入口", () => {
     await expect(service.login("other")).rejects.toMatchObject({
       code: "request.validation_failed",
     });
+  });
+
+  it("手动回调只注入正在进行的 Antigravity 登录", async () => {
+    const service = create_service();
+    let pasted = "";
+    vi.spyOn(chatgpt_oauth, "start_chatgpt_login").mockImplementation(({ signal }) =>
+      pending_login<ChatGPTCredential>(signal, "https://auth.openai.com/authorize"),
+    );
+    vi.spyOn(antigravity_oauth, "start_antigravity_login").mockImplementation(({ signal }) =>
+      pending_login<AntigravityCredential>(
+        signal,
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        (callback) => {
+          pasted = callback;
+        },
+      ),
+    );
+    const antigravity = await service.login("google-antigravity");
+    expect(
+      service.submit_callback("google-antigravity", antigravity.id, "pasted-code").snapshot
+        .providers["google-antigravity"].login?.status,
+    ).toBe("pending");
+    expect(pasted).toBe("pasted-code");
+    const chatgpt = await service.login("chatgpt");
+    expect(() => service.submit_callback("chatgpt", chatgpt.id, "pasted-code")).toThrow(
+      expect.objectContaining({
+        code: "request.validation_failed",
+        public_details: { reason: OAUTH_CALLBACK_REASONS.unsupported },
+      }),
+    );
+    expect(() =>
+      service.submit_callback("google-antigravity", "missing-attempt", "pasted-code"),
+    ).toThrow(
+      expect.objectContaining({
+        public_details: { reason: OAUTH_CALLBACK_REASONS.missing },
+      }),
+    );
+    expect(pasted).toBe("pasted-code");
   });
 
   it("解析 Antigravity 时同时返回项目 ID", async () => {
@@ -95,7 +138,25 @@ function create_service(): ModelAuthService {
 function pending_login<T>(
   signal: AbortSignal,
   url: string,
-): Promise<{ url: string; completion: Promise<T> }> {
+  submit_callback: (callback: string) => void,
+): Promise<{
+  url: string;
+  completion: Promise<T>;
+  submit_callback(callback: string): void;
+}>;
+function pending_login<T>(
+  signal: AbortSignal,
+  url: string,
+): Promise<{ url: string; completion: Promise<T> }>;
+function pending_login<T>(
+  signal: AbortSignal,
+  url: string,
+  submit_callback?: (callback: string) => void,
+): Promise<{
+  url: string;
+  completion: Promise<T>;
+  submit_callback?(callback: string): void;
+}> {
   const completion = new Promise<T>((_resolve, reject) => {
     const fail = (): void => {
       reject(new AppError("runtime.cancelled"));
@@ -104,5 +165,9 @@ function pending_login<T>(
     else signal.addEventListener("abort", fail, { once: true });
   });
   void completion.catch(() => undefined);
-  return Promise.resolve({ url, completion });
+  return Promise.resolve({
+    url,
+    completion,
+    ...(submit_callback === undefined ? {} : { submit_callback }),
+  });
 }

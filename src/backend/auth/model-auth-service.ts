@@ -65,6 +65,16 @@ export class ModelAuthService implements ModelOAuthPort {
     return { id: response.id, url: response.url, snapshot: this.snapshot() };
   }
 
+  /** 手动回调只进入指定提供方的当前登录。省略提供方时按 ChatGPT 处理并拒绝。 */
+  public submit_callback(
+    provider: unknown,
+    id: unknown,
+    callback: unknown,
+  ): { snapshot: ModelAuthSnapshot } {
+    this.account(read_requested_provider(provider)).submit_callback(id, callback);
+    return { snapshot: this.snapshot() };
+  }
+
   /** 取消只作用于指定提供方；未写提供方时按授权 ID 查找仍在进行的尝试。 */
   public async cancel_login(
     provider: unknown,
