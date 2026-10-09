@@ -34,7 +34,7 @@ describe("Cloud Code Assist 翻译请求", () => {
       response_result: "译文",
       input_tokens: 4,
       reasoning_tokens: 2,
-      output_tokens: 3,
+      output_tokens: 5,
       finish: "stop",
     });
     const request = body();
@@ -49,6 +49,20 @@ describe("Cloud Code Assist 翻译请求", () => {
         maxOutputTokens: 1000,
         thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" },
       },
+    });
+  });
+
+  it("思考 token 多于正文时分别计入，不把正文截成零", async () => {
+    await capture_request({
+      response: {
+        candidates: [{ content: { parts: [{ text: "译文" }] }, finishReason: "STOP" }],
+        usageMetadata: { candidatesTokenCount: 34, thoughtsTokenCount: 372 },
+      },
+    });
+    await expect(translate()).resolves.toMatchObject({
+      response_result: "译文",
+      reasoning_tokens: 372,
+      output_tokens: 34,
     });
   });
 

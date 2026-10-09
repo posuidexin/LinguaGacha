@@ -38,7 +38,7 @@
     "api_format": "Google",
     "api_url": "https://daily-cloudcode-pa.googleapis.com",
     "api_key": "",
-    "model_id": "gemini-3.1-pro",
+    "model_id": "gemini-3.8-flash-high",
     "request": {
       "extra_headers": {},
       "extra_body": {},

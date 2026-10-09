@@ -351,8 +351,9 @@ function read_completion(events: readonly unknown[]): AntigravityCompletion {
     if (usage !== null) {
       const candidate_tokens = read_count(usage["candidatesTokenCount"]);
       const thoughts = read_count(usage["thoughtsTokenCount"]);
-      reasoning_tokens = Math.min(candidate_tokens, thoughts);
-      output_tokens = candidate_tokens - reasoning_tokens;
+      // candidatesTokenCount 不含思考。思考多于正文时不能从 candidates 里扣。
+      reasoning_tokens = thoughts;
+      output_tokens = candidate_tokens;
       input_tokens =
         read_count(usage["promptTokenCount"]) + read_count(usage["cachedContentTokenCount"]);
     }

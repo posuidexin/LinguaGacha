@@ -171,11 +171,13 @@ describe("Model", () => {
       type?: string;
       oauth_provider?: string;
       api_url?: string;
+      model_id?: string;
     }>;
     const preset = presets.find((item) => item.id === "preset-google-antigravity");
     expect(preset).toMatchObject({
       oauth_provider: "google-antigravity",
       api_url: ANTIGRAVITY_BASE_URL,
+      model_id: "gemini-3.8-flash-high",
     });
     expect(is_pinned_model(preset ?? {})).toBe(true);
     expect(presets.find((item) => item.id === "preset-chatgpt")?.oauth_provider).toBe("chatgpt");

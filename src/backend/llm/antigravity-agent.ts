@@ -753,6 +753,7 @@ function map_usage(metadata: JsonRecord): Usage {
       ? Math.max(0, total - candidates - thinking)
       : read_count(metadata["promptTokenCount"]);
   const cache_read = Math.min(read_count(metadata["cachedContentTokenCount"]), prompt);
+  // Pi 的 output 已包含 reasoning。candidates 不含思考，所以这里相加。
   return {
     input: prompt - cache_read,
     output: candidates + thinking,

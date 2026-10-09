@@ -282,6 +282,30 @@ describe("Antigravity Agent 流", () => {
       totalTokens: 17,
     });
 
+    const thought_heavy = await run(model, context([user()]), {
+      responses: [
+        sse([
+          {
+            response: {
+              candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+              usageMetadata: {
+                promptTokenCount: 11,
+                candidatesTokenCount: 34,
+                thoughtsTokenCount: 372,
+                totalTokenCount: 417,
+              },
+            },
+          },
+        ]),
+      ],
+    });
+    expect(thought_heavy.message.usage).toMatchObject({
+      input: 11,
+      output: 406,
+      reasoning: 372,
+      totalTokens: 417,
+    });
+
     const tool = await run(model, context([user()]), {
       responses: [
         sse([
