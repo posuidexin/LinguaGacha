@@ -59,6 +59,30 @@ describe("Cloud Code Assist 翻译请求", () => {
     });
   });
 
+  it("3.8 Flash 翻译思考档位最高只发 HIGH，默认和关不带思考配置", async () => {
+    const cases = [
+      ["DEFAULT", undefined],
+      ["OFF", undefined],
+      ["LOW", "LOW"],
+      ["MEDIUM", "MEDIUM"],
+      ["HIGH", "HIGH"],
+      ["XHIGH", "HIGH"],
+      ["MAX", "HIGH"],
+    ] as const;
+    for (const [thinking_level, level] of cases) {
+      const captured = await capture_request({
+        response: {
+          candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        },
+      });
+      await translate({ model_id: "gemini-3.8-flash-high", thinking_level });
+      expect(captured.body()["model"]).toBe("gemini-3.8-flash-high");
+      const config = generation_config(captured.body());
+      if (level === undefined) expect(config).not.toHaveProperty("thinkingConfig");
+      else expect(config["thinkingConfig"]).toEqual({ includeThoughts: true, thinkingLevel: level });
+    }
+  });
+
   it("3.1 Pro 高档改写请求名，关和低档留在 low 并使用预算", async () => {
     const high = await capture_request({
       response: {

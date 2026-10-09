@@ -212,6 +212,27 @@ describe("Antigravity Agent 流", () => {
     });
   });
 
+  it("3.8 Flash 的思考档位最高只发 HIGH，关档不带思考配置", async () => {
+    const model = test_model("gemini-3.8-flash-high");
+    const cases = [
+      ["minimal", "LOW"],
+      ["low", "LOW"],
+      ["medium", "MEDIUM"],
+      ["high", "HIGH"],
+      ["xhigh", "HIGH"],
+    ] as const;
+    for (const [reasoning, level] of cases) {
+      const { captures } = await run(model, context([user()]), { reasoning });
+      expect(captures[0]?.body["model"]).toBe("gemini-3.8-flash-high");
+      expect(generation_of(request_of(captures[0]))["thinkingConfig"]).toEqual({
+        includeThoughts: true,
+        thinkingLevel: level,
+      });
+    }
+    const off = await run(model, context([user()]));
+    expect(generation_of(request_of(off.captures[0]))).not.toHaveProperty("thinkingConfig");
+  });
+
   it("把调用方的 temperature 和 top_p 写入 generationConfig", async () => {
     const flashed = await run(test_model("gemini-3.8-flash-high"), context([user()]), {
       temperature: 0.2,
@@ -695,7 +716,7 @@ async function run(
   model: Model<Api>,
   transcript: TranscriptContext,
   options: {
-    reasoning?: "low" | "high" | "xhigh";
+    reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
     maxTokens?: number;
     temperature?: number;
     top_p?: number;
