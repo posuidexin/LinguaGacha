@@ -22,7 +22,8 @@ export function ModelItemChip(props: ModelItemChipProps): JSX.Element {
   const auth = useModelAuthSnapshot();
   const oauth = props.model.auth_type === "oauth";
   const pinned = is_pinned_model(props.model);
-  const auth_state = auth?.connected ? "connected" : "disconnected";
+  const provider = props.model.oauth_provider ?? "chatgpt";
+  const auth_state = auth?.providers[provider].connected ? "connected" : "disconnected";
   const {
     isDragSource: isDragging,
     handleRef,

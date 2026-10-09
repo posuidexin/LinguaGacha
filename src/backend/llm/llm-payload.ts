@@ -79,7 +79,8 @@ export function apply_request_overrides(
       is_json_record(item) && item["role"] === "system" ? { ...item, role: "developer" } : item,
     );
   }
-  return snapshot.auth_type === "oauth"
+  // 未写提供方的旧 OAuth 配置仍走 ChatGPT；Antigravity 不经过这条 Pi 载荷。
+  return snapshot.auth_type === "oauth" && snapshot.oauth_provider !== "google-antigravity"
     ? apply_chatgpt_payload(record, snapshot.extra_body)
     : { ...record, ...snapshot.extra_body };
 }

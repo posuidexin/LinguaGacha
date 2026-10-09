@@ -6,6 +6,10 @@ export const zh_cn_model_page = {
     success: "点击登录 …",
     login: "点击登录",
     logout: "退出登录",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "此登录使用 Antigravity 的 Cloud Code Assist 接口。该用法违反 Antigravity 服务条款，有账号封禁风险，仅供个人使用。",
   },
   title: "模型管理",
   category: {

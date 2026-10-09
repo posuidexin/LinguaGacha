@@ -1,8 +1,20 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { is_json_record } from "./json";
 import { AGENT_COMPACTION_RESERVE_TOKENS, DEFAULT_MODEL_AGENT_CONFIG } from "./model-agent";
-import { MODEL_TYPES, Model, normalize_model_selection } from "./model";
+import {
+  ANTIGRAVITY_BASE_URL,
+  MODEL_TYPES,
+  Model,
+  is_pinned_model,
+  normalize_model_selection,
+} from "./model";
+
+const PRESET_PATH = fileURLToPath(
+  new URL("../../builtin/model/preset/preset_model_builtin.json", import.meta.url),
+);
 
 describe("Model", () => {
   it("速度配置补齐默认值，并通过序列化保留选择", () => {
@@ -136,6 +148,37 @@ describe("Model", () => {
       "preset_model_custom_anthropic.json",
     );
     expect(Model.resolve_template_filename("PRESET")).toBeNull();
+  });
+
+  it("OAuth 缺少提供方时仍是 ChatGPT，Antigravity 往返保留项目入口", () => {
+    expect(Model.from_json({ auth_type: "oauth" }, "legacy").oauth_provider).toBe("chatgpt");
+    expect(Model.from_json({ auth_type: "api_key" }, "key").to_json()).not.toHaveProperty(
+      "oauth_provider",
+    );
+    const model = Model.from_json(
+      {
+        auth_type: "oauth",
+        oauth_provider: "google-antigravity",
+        api_url: ANTIGRAVITY_BASE_URL,
+        api_format: "Google",
+        model_id: "gemini-3.1-pro",
+      },
+      "antigravity",
+    );
+    expect(Model.from_json(model.to_json(), "copy").oauth_provider).toBe("google-antigravity");
+    const presets = JSON.parse(readFileSync(PRESET_PATH, "utf8")) as Array<{
+      id?: string;
+      type?: string;
+      oauth_provider?: string;
+      api_url?: string;
+    }>;
+    const preset = presets.find((item) => item.id === "preset-google-antigravity");
+    expect(preset).toMatchObject({
+      oauth_provider: "google-antigravity",
+      api_url: ANTIGRAVITY_BASE_URL,
+    });
+    expect(is_pinned_model(preset ?? {})).toBe(true);
+    expect(presets.find((item) => item.id === "preset-chatgpt")?.oauth_provider).toBe("chatgpt");
   });
 
   it("模型选择规范化并默认跟随 Agent 批量翻译模型", () => {

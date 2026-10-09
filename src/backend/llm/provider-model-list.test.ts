@@ -32,8 +32,37 @@ describe("provider-model-list", () => {
       { id: "model-z", name: "First model" },
       { id: "model-a", name: "Second model" },
     ]);
-    expect(resolve).toHaveBeenCalledWith("session");
+    expect(resolve).toHaveBeenCalledWith("chatgpt", "session");
     expect(fetch_mock).toHaveBeenCalledOnce();
+  });
+
+  it("Antigravity 目录走 Cloud Code，并带上该账户的 token", async () => {
+    const fetch_mock = vi.fn(async () =>
+      Response.json({
+        models: { "gemini-3.1-pro": { displayName: "Gemini 3.1 Pro" } },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch_mock);
+    const resolve = vi.fn(async () => ({ apiKey: "antigravity-token", project_id: "projects/1" }));
+    await expect(
+      list_available_models(
+        {
+          auth_type: "oauth",
+          oauth_provider: "google-antigravity",
+          api_format: "Google",
+          api_url: "https://daily-cloudcode-pa.googleapis.com",
+        },
+        { bind: () => "anti-session", resolve },
+      ),
+    ).resolves.toEqual([{ id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" }]);
+    expect(resolve).toHaveBeenCalledWith("google-antigravity", "anti-session");
+    expect(fetch_mock).toHaveBeenCalledWith(
+      expect.stringContaining("daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer antigravity-token" }),
+      }),
+    );
   });
   it.each([
     ["OpenAI", "https://api.example/v1"],

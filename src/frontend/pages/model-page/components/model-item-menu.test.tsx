@@ -7,9 +7,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { create_model_snapshot } from "@frontend/pages/model-page/model-test-fixture";
 import { ModelItemMenu } from "./model-item-menu";
+import type { ModelAuthSnapshot } from "@shared/model-auth";
 import { apply_model_auth_snapshot } from "@frontend/app/state/model-auth-store";
 
 const { api_fetch_mock } = vi.hoisted(() => ({ api_fetch_mock: vi.fn() }));
+
+/** 菜单只读取当前模型所属提供方，这里固定为 ChatGPT。 */
+function menu_auth(connected: boolean, revision: number): ModelAuthSnapshot {
+  return {
+    instance_id: "menu-login",
+    revision,
+    providers: {
+      chatgpt: { connected, login: null },
+      "google-antigravity": { connected: false, login: null },
+    },
+  };
+}
 vi.mock("@frontend/app/desktop/desktop-api", () => ({
   api_fetch: api_fetch_mock,
 }));
@@ -73,7 +86,7 @@ describe("ModelItemMenu", () => {
   });
 
   it("OAuth 账户入口随连接状态切换并转交页面操作", async () => {
-    const snapshot = { instance_id: "menu-login", revision: 0, login: null, connected: false };
+    const snapshot = menu_auth(false, 0);
     apply_model_auth_snapshot(snapshot);
     api_fetch_mock.mockResolvedValue({ snapshot });
     const props = await render_menu({ model: create_model_snapshot({ auth_type: "oauth" }) });
@@ -81,7 +94,7 @@ describe("ModelItemMenu", () => {
       menu_item("model_page.auth.login")!.click();
     });
     expect(props.on_login).toHaveBeenCalledOnce();
-    await act(async () => apply_model_auth_snapshot({ ...snapshot, revision: 1, connected: true }));
+    await act(async () => apply_model_auth_snapshot(menu_auth(true, 1)));
     expect(menu_item("model_page.auth.login")).toBeUndefined();
     await act(async () => {
       menu_item("model_page.auth.logout")!.click();

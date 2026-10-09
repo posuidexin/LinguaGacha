@@ -8,6 +8,10 @@ export const ko_kr_model_page = {
     success: "클릭하여 로그인 …",
     login: "클릭하여 로그인",
     logout: "로그아웃",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "이 로그인은 Antigravity의 Cloud Code Assist 인터페이스를 사용합니다. 이 사용은 Antigravity 서비스 약관을 위반하며 계정 정지 위험이 있고, 개인 용도로만 사용하세요.",
   },
   title: "모델 관리",
   category: {

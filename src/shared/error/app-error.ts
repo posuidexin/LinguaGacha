@@ -98,6 +98,12 @@ export const APP_ERROR_DEFINITIONS = {
     status: 409,
     severity: "expected",
   },
+  "model.agent_tools_unsupported": {
+    message:
+      "Google Antigravity sign-in supports single-turn translation only. Agent tool calls are not available for this provider.",
+    status: 409,
+    severity: "expected",
+  },
   "worker.failed": {
     message: "The background execution channel failed.",
     status: 502,

@@ -8,6 +8,10 @@ export const ja_jp_model_page = {
     success: "クリックしてログイン …",
     login: "クリックしてログイン",
     logout: "ログアウト",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "このログインは Antigravity の Cloud Code Assist インターフェースを使います。この利用は Antigravity の利用規約に違反し、アカウント停止の可能性があり、個人利用に限られます。",
   },
   title: "モデル管理",
   category: {

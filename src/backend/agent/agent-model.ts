@@ -19,7 +19,7 @@ import { apply_request_overrides } from "../llm/llm-payload";
 import { resolve_model_capability, type PiCatalogModel } from "../llm/model-capability";
 import type { PiModelCatalogReader } from "../llm/pi-model-catalog";
 import { resolve_pi_model, type PiApi } from "../llm/llm-pi";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
 import { observe_chatgpt_request } from "../llm/chatgpt-request";
 import { read_config_model_records, resolve_model_for_usage } from "../model/model-config-resolver";
 
@@ -52,7 +52,7 @@ export function register_agent_model(
   config: JsonRecord,
   identity: Pick<ModelRequestIdentity, "user_agent">,
   catalog: PiModelCatalogReader,
-  auth?: Pick<ChatGPTAuthService, "bind" | "resolve">,
+  auth?: ModelOAuthPort,
 ): {
   model: PiModel<PiApi>;
   thinkingLevel: PiModelThinkingLevel;
@@ -63,6 +63,8 @@ export function register_agent_model(
   const configured_model = Model.from_json(raw_model, String(raw_model["id"] ?? ""));
   const capability = resolve_model_capability(configured_model, catalog.read_models());
   const snapshot = read_model_request_snapshot(raw_model, { user_agent: identity.user_agent });
+  if (snapshot.oauth_provider === "google-antigravity")
+    throw new AppErrors.AppError("model.agent_tools_unsupported");
   const api_key = snapshot.api_keys[0] ?? "no_key_required";
   const configured_name = String(raw_model["name"] ?? "").trim();
   const pi = resolve_pi_model(snapshot, capability, {
@@ -88,16 +90,16 @@ export function register_agent_model(
       onPayload: (payload, active_model) =>
         apply_request_overrides(snapshot, payload, active_model.compat),
     });
-  if (snapshot.auth_type === "oauth") {
+  if (snapshot.oauth_provider === "chatgpt") {
     if (auth === undefined) throw new AppErrors.AppError("model.auth_required");
-    const session_id = auth.bind();
+    const session_id = auth.bind("chatgpt");
     const authenticated_stream =
       (stream: ProviderStreams["streamSimple"]): ProviderStreams["streamSimple"] =>
       (active_model, context, options) =>
         lazyStream(active_model, async () => {
           // 压缩或 SDK 重试可能传回旧 apiKey，真实派发点重新解析并覆盖它。
           const credential = await auth
-            .resolve(session_id, options?.signal)
+            .resolve("chatgpt", session_id, options?.signal)
             .catch((error: unknown) => {
               // SDK 的重试入口消费 AssistantMessage；只把已分类的临时故障映射为其标准信号。
               if (
@@ -152,7 +154,7 @@ export function register_agent_model(
             check: async () => ({ type: "oauth", source: "ChatGPT" }),
             // 请求派发时由应用认证服务解析凭据，SDK 传入的旧 apiKey 不参与解析。
             resolve: async ({ signal }) => ({
-              auth: await auth.resolve(session_id, signal),
+              auth: await auth.resolve("chatgpt", session_id, signal),
               source: "ChatGPT",
             }),
           },

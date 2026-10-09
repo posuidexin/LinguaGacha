@@ -5,27 +5,30 @@ import { default_native_fs } from "../../native/native-fs";
 import { AppError } from "../../shared/error";
 import type { ChatGPTCredential } from "./chatgpt-oauth";
 
-type AccountFile = {
+type AccountFile<C> = {
   host_id: string; // 同一应用数据目录的稳定安装标识。
-  credential: ChatGPTCredential | null; // 锁内整体替换的当前会话凭据。
+  credential: C | null; // 锁内整体替换的当前会话凭据。
   login_id: string | null; // 跨进程取消与退出使旧浏览器回调失效。
 };
 
 const LOCK_RETRIES = { retries: 100, minTimeout: 100, maxTimeout: 250 }; // 跨进程锁等待有界，刷新锁覆盖最长 15 秒的 token 请求。
 
 /** 账户写锁只保护本地提交，会话刷新锁单独协调网络轮换。 */
-export class ChatGPTCredentialStore {
-  /** 文件路径由应用路径服务注入。 */
-  public constructor(private readonly file_path: string) {}
+export class ChatGPTCredentialStore<C = ChatGPTCredential> {
+  /** 文件路径由应用路径服务注入；标签只用于损坏文件的诊断。 */
+  public constructor(
+    private readonly file_path: string,
+    private readonly invalid_label = "ChatGPT",
+  ) {}
 
   /** 只读取当前字段，旧文件的注册绑定在下次原子写入时自然移除。 */
-  public read_account(): AccountFile {
+  public read_account(): AccountFile<C> {
     try {
       const value = JSON.parse(
         default_native_fs.read_file(this.file_path).toString("utf8"),
-      ) as AccountFile;
+      ) as AccountFile<C>;
       if (typeof value.host_id !== "string" || !Object.hasOwn(value, "credential"))
-        throw new Error("Invalid ChatGPT credential file");
+        throw new Error(`Invalid ${this.invalid_label} credential file`);
       return { host_id: value.host_id, credential: value.credential, login_id: value.login_id };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
@@ -51,7 +54,7 @@ export class ChatGPTCredentialStore {
   }
 
   /** 锁内重新读磁盘并同步提交；回调只修改本地记录，不执行网络操作。 */
-  public async update<T>(operation: (account: AccountFile) => T): Promise<T> {
+  public async update<T>(operation: (account: AccountFile<C>) => T): Promise<T> {
     default_native_fs.make_dir(path.dirname(this.file_path));
     const release = await lockfile.lock(this.file_path, {
       realpath: false,
@@ -69,7 +72,10 @@ export class ChatGPTCredentialStore {
   }
 
   /** 整份记录原子替换，写入失败传播给持锁调用者。 */
-  private save(account: AccountFile): void {
+  private save(account: AccountFile<C>): void {
     default_native_fs.write_file_atomic(this.file_path, JSON.stringify(account, null, 2));
   }
 }
+
+/** ChatGPT 与 Antigravity 共用同一套本地账户文件。 */
+export { ChatGPTCredentialStore as OAuthCredentialStore };

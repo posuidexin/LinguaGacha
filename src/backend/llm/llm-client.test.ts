@@ -85,14 +85,76 @@ describe("LLMClient", () => {
     for (let attempt = 0; attempt < 2; attempt += 1)
       expect((await client.request(body, signal)).response_result).toBe("ok");
     expect(auth.bind).not.toHaveBeenCalled();
-    expect(auth.resolve.mock.calls.map(([session]) => session)).toEqual([
-      "bound-session",
-      "bound-session",
+    expect(auth.resolve.mock.calls.map(([provider, session]) => [provider, session])).toEqual([
+      ["chatgpt", "bound-session"],
+      ["chatgpt", "bound-session"],
     ]);
     expect(api_mocks.responses.mock.calls.map(([, , options]) => options?.apiKey)).toEqual([
       "token-one",
       "token-two",
     ]);
+  });
+
+  it("Antigravity 单轮翻译直接读取 Cloud Code 文本，不进入 Pi", async () => {
+    const auth = {
+      bind: vi.fn(() => "bound-session"),
+      resolve: vi.fn(async () => ({ apiKey: "token", project_id: "projects/1" })),
+    };
+    const client = new LLMClient({
+      userAgent: TEST_USER_AGENT,
+      catalog: { read_models: read_builtin_pi_models },
+      auth,
+    });
+    let request_body: Record<string, unknown> | undefined;
+    const fetch_mock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      request_body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        `data: ${JSON.stringify({
+          response: {
+            candidates: [
+              {
+                content: { parts: [{ text: "译文" }] },
+                finishReason: "STOP",
+              },
+            ],
+            usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, thoughtsTokenCount: 0 },
+          },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    try {
+      await expect(
+        client.request(
+          create_body({
+            auth_type: "oauth",
+            oauth_provider: "google-antigravity",
+            api_format: "Google",
+            api_url: "https://daily-cloudcode-pa.googleapis.com",
+            model_id: "gemini-3.1-pro",
+          }),
+          new AbortController().signal,
+        ),
+      ).resolves.toMatchObject({
+        response_result: "译文",
+        input_tokens: 4,
+        output_tokens: 2,
+      });
+      expect(api_mocks.google).not.toHaveBeenCalled();
+      expect(auth.bind).toHaveBeenCalledWith("google-antigravity");
+      expect(auth.resolve).toHaveBeenCalledWith(
+        "google-antigravity",
+        "bound-session",
+        expect.any(AbortSignal),
+      );
+      expect(request_body).toMatchObject({
+        project: "projects/1",
+        model: "gemini-3.1-pro",
+        request: { contents: [{ role: "user", parts: [{ text: "こんにちは" }] }] },
+      });
+    } finally {
+      fetch_mock.mockRestore();
+    }
   });
   it.each([
     {

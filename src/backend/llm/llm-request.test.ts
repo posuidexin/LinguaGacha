@@ -34,6 +34,22 @@ describe("LLM 请求策略", () => {
         identity,
       ),
     ).toThrow();
+    const antigravity = {
+      auth_type: "oauth",
+      oauth_provider: "google-antigravity",
+      api_format: "Google",
+      api_url: "https://daily-cloudcode-pa.googleapis.com/",
+      model_id: "gemini-3.1-pro",
+    };
+    expect(read_model_request_snapshot(antigravity, identity).base_url).toBe(
+      "https://daily-cloudcode-pa.googleapis.com",
+    );
+    expect(() =>
+      read_model_request_snapshot(
+        { ...antigravity, api_url: "https://generativelanguage.googleapis.com" },
+        identity,
+      ),
+    ).toThrow(/Cloud Code Assist/);
   });
 
   it("把模型配置收窄为共享请求快照", () => {

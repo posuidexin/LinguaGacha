@@ -9,6 +9,10 @@ export const en_us_model_page = {
     success: "Click to sign in …",
     login: "Click to sign in",
     logout: "Sign out",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "This sign-in uses Antigravity's Cloud Code Assist API. That use violates the Antigravity Terms of Service, can get the account banned, and is for personal use only.",
   },
   title: "Model Management",
   category: {

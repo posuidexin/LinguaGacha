@@ -45,7 +45,7 @@ import type { ProjectSessionState } from "../project/project-session-state";
 import type { RuntimeOperationGate } from "../runtime-operation-gate";
 import { AgentDecisionCoordinator } from "./agent-decision";
 import { register_agent_model, resolve_agent_batch_translation_model } from "./agent-model";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
 import type { PiModelCatalogReader } from "../llm/pi-model-catalog";
 import { load_agent_chat_seed, type AgentChatSeed } from "./agent-chat-seed";
 import { create_agent_read_skill_tool } from "./tools/read-skill";
@@ -79,7 +79,7 @@ type AgentServicePaths = Pick<
 
 type AgentServiceOptions = {
   database: Pick<ProjectDatabase, "open_agent_store">;
-  auth?: ChatGPTAuthService;
+  auth?: ModelOAuthPort;
   skills: Pick<AgentSkillsService, "get_current" | "subscribe" | "refresh">;
   catalog: PiModelCatalogReader;
   batchTranslation: Pick<
@@ -120,7 +120,7 @@ type LoadedAgentResources = Readonly<{
 
 /** 产品命令协调唯一会话与运行租约。历史和公开条目来自 durable 提交。 */
 export class AgentService {
-  private readonly auth: ChatGPTAuthService | undefined;
+  private readonly auth: ModelOAuthPort | undefined;
   private readonly catalog: PiModelCatalogReader;
   private readonly batch_translation: AgentServiceOptions["batchTranslation"];
   private readonly paths: AgentServiceOptions["paths"];

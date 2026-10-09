@@ -77,6 +77,7 @@ export function ModelItemMenu(props: ModelItemMenuProps): JSX.Element {
     <AppDropdownMenuContent align="center">
       {props.model.auth_type === "oauth" ? (
         <ChatGPTAccountMenu
+          provider={props.model.oauth_provider ?? "chatgpt"}
           readonly={props.auth_disabled}
           on_logout={props.on_logout}
           on_login={props.on_login}

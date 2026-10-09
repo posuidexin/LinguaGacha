@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api_fetch } from "@frontend/app/desktop/desktop-api";
 import type { AvailableModel } from "@shared/model-catalog";
-import type { ChatGPTAuthSnapshot } from "@shared/model-auth";
+import type { ModelAuthSnapshot } from "@shared/model-auth";
 import { apply_model_auth_snapshot } from "@frontend/app/state/model-auth-store";
 import { useRuntimeSnapshot } from "@frontend/app/state/use-desktop-state";
 import { useModelCatalogRevision } from "@frontend/app/state/model-catalog-store";
@@ -29,7 +29,9 @@ import {
   MODEL_TYPES,
   Model,
   is_model_thinking_level,
+  normalize_oauth_provider,
   type ModelType,
+  type OAuthProvider,
 } from "@domain/model";
 import { MODEL_TYPE_TITLE_KEY } from "@frontend/features/model-selection/model-selection-meta";
 
@@ -64,7 +66,7 @@ type UseModelPageStateResult = {
   request_copy_model: (model_id: string) => Promise<void>;
   request_delete_model: (model_id: string) => void;
   request_reset_model: (model_id: string) => void;
-  request_logout: () => void;
+  request_logout: (provider?: OAuthProvider) => void;
   request_reorder_models: (model_type: ModelType, ordered_model_ids: string[]) => Promise<void>;
   update_model_patch: (model_id: string, patch: Record<string, unknown>) => Promise<void>;
   request_test_model: (model_id: string) => Promise<void>;
@@ -257,6 +259,8 @@ function normalize_model_entry(
     api_url: String(source.api_url ?? ""),
     api_key: String(source.api_key ?? ""),
     auth_type: source.auth_type === "oauth" ? "oauth" : "api_key",
+    oauth_provider:
+      source.auth_type === "oauth" ? normalize_oauth_provider(source.oauth_provider) : null,
     model_id: String(source.model_id ?? ""),
     available_thinking_levels: Array.isArray(source.available_thinking_levels)
       ? source.available_thinking_levels.filter(is_model_thinking_level)
@@ -626,9 +630,12 @@ export function useModelPageState(): UseModelPageStateResult {
   );
 
   /** 账户退出由页面持有确认状态，菜单关闭后确认框继续存在。 */
-  const request_logout = useCallback((): void => {
-    if (!test_disabled) set_confirm_state({ kind: "logout", model_id: null });
-  }, [test_disabled]);
+  const request_logout = useCallback(
+    (provider: OAuthProvider = "chatgpt"): void => {
+      if (!test_disabled) set_confirm_state({ kind: "logout", model_id: null, provider });
+    },
+    [test_disabled],
+  );
 
   /** 提交模型顺序并同步列表结果。 */
   const request_reorder_models = useCallback(
@@ -723,8 +730,8 @@ export function useModelPageState(): UseModelPageStateResult {
     try {
       if (current_confirm_state.kind === "logout") {
         const payload = await api_fetch<{
-          snapshot: ChatGPTAuthSnapshot;
-        }>("/api/models/auth/logout", {});
+          snapshot: ModelAuthSnapshot;
+        }>("/api/models/auth/logout", { provider: current_confirm_state.provider });
         apply_model_auth_snapshot(payload.snapshot);
       } else if (current_confirm_state.kind === "delete") {
         const payload = await api_fetch<ModelPageSnapshotPayload>("/api/models/delete", {

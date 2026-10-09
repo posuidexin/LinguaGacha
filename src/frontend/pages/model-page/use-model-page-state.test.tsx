@@ -98,7 +98,11 @@ describe("useModelPageState", () => {
     await render_hook();
     api_fetch_mock.mockClear();
     await act(async () => latest_state!.request_logout());
-    expect(latest_state!.confirm_state).toEqual({ kind: "logout", model_id: null });
+    expect(latest_state!.confirm_state).toEqual({
+      kind: "logout",
+      model_id: null,
+      provider: "chatgpt",
+    });
     expect(api_fetch_mock).not.toHaveBeenCalled();
     await act(async () => latest_state!.close_confirm());
     expect(latest_state!.confirm_state.kind).toBeNull();
@@ -112,7 +116,9 @@ describe("useModelPageState", () => {
       },
     });
     await act(async () => latest_state!.confirm_dialog());
-    expect(api_fetch_mock).toHaveBeenCalledExactlyOnceWith("/api/models/auth/logout", {});
+    expect(api_fetch_mock).toHaveBeenCalledExactlyOnceWith("/api/models/auth/logout", {
+      provider: "chatgpt",
+    });
     expect(push_toast).not.toHaveBeenCalled();
     expect(latest_state!.confirm_state.kind).toBeNull();
     expect(latest_state!.readonly).toBe(false);

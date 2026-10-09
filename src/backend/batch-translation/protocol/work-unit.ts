@@ -45,6 +45,7 @@ export type TranslationModelSnapshot = Pick<
   | "api_url"
   | "api_key"
   | "auth_type"
+  | "oauth_provider"
   | "model_id"
   | "agent"
   | "request"

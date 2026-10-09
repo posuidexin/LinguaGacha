@@ -9,6 +9,10 @@ export const de_de_model_page = {
     success: "Zum Anmelden klicken …",
     login: "Anmelden",
     logout: "Abmelden",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "Diese Anmeldung nutzt die Cloud Code Assist-Schnittstelle von Antigravity. Das verstößt gegen die Nutzungsbedingungen von Antigravity, kann zur Kontosperre führen und ist nur für den persönlichen Gebrauch.",
   },
   title: "Modellverwaltung",
   category: {

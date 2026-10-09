@@ -1,9 +1,9 @@
 import { read_json_record, type JsonRecord, type JsonValue } from "../../domain/json";
-import { Model } from "../../domain/model";
-import { CHATGPT_BASE_URL } from "../../domain/model";
+import { Model, CHATGPT_BASE_URL, normalize_oauth_provider } from "../../domain/model";
 import type { AvailableModel } from "../../shared/model-catalog";
 import { create_provider_error, read_provider_response_error } from "../network/provider-error";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
+import { list_antigravity_models } from "./antigravity-cloud-code";
 import * as AppErrors from "../../shared/error";
 import {
   get_primary_api_key,
@@ -24,16 +24,22 @@ const CHATGPT_MODEL_LIST_CLIENT_VERSION = "0.160.0";
  */
 export async function list_available_models(
   model: JsonRecord,
-  auth?: Pick<ChatGPTAuthService, "bind" | "resolve">,
+  auth?: ModelOAuthPort,
 ): Promise<AvailableModel[]> {
   try {
     if (model["auth_type"] === "oauth") {
       if (auth === undefined) throw new AppErrors.AppError("model.auth_required");
+      const provider = normalize_oauth_provider(model["oauth_provider"]);
       const snapshot = read_model_request_snapshot(model, {
         user_agent: BROWSER_USER_AGENT,
         session_id: "model-list",
       });
-      const credential = await auth.resolve(auth.bind());
+      const credential = await auth.resolve(provider, auth.bind(provider));
+      if (provider === "google-antigravity")
+        return list_antigravity_models({
+          access_token: credential.apiKey,
+          base_url: snapshot.base_url,
+        });
       const data = read_json_record(
         await fetch_json(
           `${CHATGPT_BASE_URL}/models?client_version=${CHATGPT_MODEL_LIST_CLIENT_VERSION}`,

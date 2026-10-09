@@ -79,9 +79,17 @@ export class BatchTranslationRunner {
     const retranslate = command.operation === "retranslate";
     const mode = command.operation === "translate" ? command.mode : "continue";
     try {
-      const auth_session = run_context.model.auth_type === "oauth" ? this.auth?.bind() : undefined;
-      if (run_context.model.auth_type === "oauth" && auth_session === undefined)
-        throw new Error("ChatGPT authentication is not configured");
+      const provider =
+        run_context.model.auth_type === "oauth"
+          ? (run_context.model.oauth_provider ?? "chatgpt")
+          : null;
+      const auth_session = provider === null ? undefined : this.auth?.bind(provider);
+      if (provider !== null && auth_session === undefined)
+        throw new Error(
+          provider === "google-antigravity"
+            ? "Google Antigravity authentication is not configured"
+            : "ChatGPT authentication is not configured",
+        );
       await this.task_runtime.publish_status(handle, "running");
       release_database_lease = this.task_store.acquire_project_lease(
         `task:${handle.run_id}:translation`,

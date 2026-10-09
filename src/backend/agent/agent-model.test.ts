@@ -121,6 +121,25 @@ beforeEach(() => {
 });
 
 describe("Agent 模型注册", () => {
+  it("Google Antigravity 在建立工具流之前拒绝 Agent", () => {
+    expect(() =>
+      register_agent_model(
+        createModels(),
+        build_config("Google", {
+          auth_type: "oauth",
+          oauth_provider: "google-antigravity",
+          api_url: "https://daily-cloudcode-pa.googleapis.com",
+          model_id: "gemini-3.1-pro",
+        }),
+        TEST_REQUEST_IDENTITY,
+        catalog,
+        {
+          bind: () => "session",
+          resolve: async () => ({ apiKey: "token", project_id: "project" }),
+        },
+      ),
+    ).toThrow(expect.objectContaining({ code: "model.agent_tools_unsupported" }));
+  });
   it.each([
     [429, "subscription_sharing_usage_limit_exceeded", false],
     [503, "subscription_sharing_usage_unavailable", true],

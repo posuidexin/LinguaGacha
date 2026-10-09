@@ -14,18 +14,29 @@ export function ChatGPTLoginDialog({
   return (
     <AppActionDialog
       open={login.open}
-      title={null}
+      title={t(
+        login.provider === "google-antigravity"
+          ? "model_page.auth.provider_google_antigravity"
+          : "model_page.auth.provider_chatgpt",
+      )}
       description={
-        <Input
-          readOnly
-          value={login.url ?? ""}
-          placeholder={t("app.action.loading")}
-          aria-label={t("model_page.auth.copy_link")}
-          onFocus={(event) => {
-            event.currentTarget.select();
-            event.currentTarget.scrollLeft = 0;
-          }}
-        />
+        <>
+          {login.provider === "google-antigravity" ? (
+            <p className="model-page__auth-notice">
+              {t("model_page.auth.antigravity_personal_use")}
+            </p>
+          ) : null}
+          <Input
+            readOnly
+            value={login.url ?? ""}
+            placeholder={t("app.action.loading")}
+            aria-label={t("model_page.auth.copy_link")}
+            onFocus={(event) => {
+              event.currentTarget.select();
+              event.currentTarget.scrollLeft = 0;
+            }}
+          />
+        </>
       }
       onClose={() => {
         void login.cancel();

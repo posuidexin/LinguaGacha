@@ -28,7 +28,40 @@
       "top_p": 0.95,
       "top_p_custom_enable": false
     },
-    "auth_type": "oauth"
+    "auth_type": "oauth",
+    "oauth_provider": "chatgpt"
+  },
+  {
+    "id": "preset-google-antigravity",
+    "type": "PRESET",
+    "name": "Google Antigravity",
+    "api_format": "Google",
+    "api_url": "https://daily-cloudcode-pa.googleapis.com",
+    "api_key": "",
+    "model_id": "gemini-3.1-pro",
+    "request": {
+      "extra_headers": {},
+      "extra_body": {},
+      "extra_headers_custom_enable": false,
+      "extra_body_custom_enable": false
+    },
+    "threshold": {
+      "input_token_limit": 768,
+      "output_token_limit": 0,
+      "rpm_limit": 0,
+      "concurrency_limit": 0
+    },
+    "thinking": {
+      "level": "OFF"
+    },
+    "generation": {
+      "temperature": 0.95,
+      "temperature_custom_enable": false,
+      "top_p": 0.95,
+      "top_p_custom_enable": false
+    },
+    "auth_type": "oauth",
+    "oauth_provider": "google-antigravity"
   },
   {
     "id": "preset-sakura",

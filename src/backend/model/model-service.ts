@@ -5,7 +5,7 @@ import type { LogManager } from "../log/log-manager";
 import { AppPathService } from "../app/app-path-service";
 import { AppSettingService } from "../app/app-setting-service";
 import { list_available_models } from "../llm/provider-model-list";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
 import {
   adjust_model_thinking_level,
   resolve_model_capability,
@@ -20,6 +20,7 @@ import {
   is_model_thinking_level,
   is_pinned_model,
   normalize_model_selection,
+  normalize_oauth_provider,
   type CustomModelType,
   type ModelSelection,
 } from "../../domain/model";
@@ -90,7 +91,7 @@ export class ModelService {
     runtime_gate: RuntimeOperationGate,
     catalog: PiModelCatalogReader,
     log_manager?: Pick<LogManager, "info" | "warning">,
-    private readonly auth?: ChatGPTAuthService,
+    private readonly auth?: ModelOAuthPort,
   ) {
     this.paths = paths;
     this.app_setting_service = app_setting_service;
@@ -405,7 +406,8 @@ export class ModelService {
     signal: AbortSignal,
   ): Promise<JsonRecord> {
     const oauth = model["auth_type"] === "oauth";
-    const auth_session = oauth ? this.auth?.bind() : undefined;
+    const provider = oauth ? normalize_oauth_provider(model["oauth_provider"]) : null;
+    const auth_session = provider === null ? undefined : this.auth?.bind(provider);
     const keys = oauth ? [""] : collect_api_keys(String(model["api_key"] ?? ""));
     const key_results: Array<JsonRecord> = [];
     const app_language = config["app_language"];
@@ -413,7 +415,12 @@ export class ModelService {
     for (const api_key of keys) {
       signal.throwIfAborted();
       const model_for_test = { ...model, api_key };
-      const masked_key = oauth ? "ChatGPT" : this.mask_api_key(api_key);
+      const masked_key =
+        provider === "google-antigravity"
+          ? "Google Antigravity"
+          : provider === "chatgpt"
+            ? "ChatGPT"
+            : this.mask_api_key(api_key);
       this.log_model_test_key_start(app_language, masked_key, messages);
       const started_at = Date.now();
       const result = await this.llm_client.request(
