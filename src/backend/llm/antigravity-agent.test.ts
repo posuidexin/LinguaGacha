@@ -174,7 +174,7 @@ describe("Antigravity Agent 流", () => {
     expect(closed.captures[0]?.body["model"]).toBe("gemini-3.1-pro-low");
     expect(generation_of(closed_request)).toMatchObject({
       maxOutputTokens: 65_535,
-      thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
+      thinkingConfig: { includeThoughts: false, thinkingBudget: 1_001 },
     });
     expect(labels_of(closed_request)["model_enum"]).toBe("MODEL_PLACEHOLDER_M36");
 

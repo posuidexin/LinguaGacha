@@ -230,12 +230,14 @@ export function antigravity_claude_thinking(effort: AntigravityEffort): JsonReco
   };
 }
 
-/** 3.1 Pro 只用 thinkingBudget。省略配置会回到 SKU 自带档位，关档必须显式写 0。 */
+/**
+ * 3.1 Pro 只用 thinkingBudget。省略配置会回到 SKU 自带档位；
+ * 预算 0 会被拒绝（只允许思考模式），关和默认改为最低预算且不回传思考。
+ */
 export function antigravity_pro_31_thinking(effort: AntigravityEffort): JsonRecord {
-  if (effort === "off") return { includeThoughts: false, thinkingBudget: 0 };
   const high = effort === "high" || effort === "xhigh" || effort === "max";
   return {
-    includeThoughts: true,
+    includeThoughts: effort !== "off",
     thinkingBudget: high ? PRO_31_HIGH_BUDGET : PRO_31_LOW_BUDGET,
   };
 }

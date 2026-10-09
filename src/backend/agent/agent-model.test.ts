@@ -226,7 +226,7 @@ describe("Agent 模型注册", () => {
       temperature: 0.2,
       topP: 0.8,
       maxOutputTokens: 65_535,
-      thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
+      thinkingConfig: { includeThoughts: false, thinkingBudget: 1_001 },
     });
 
     token = "refreshed-token";

@@ -79,24 +79,26 @@ describe("Cloud Code Assist 翻译请求", () => {
     });
     expect(generation_config(high.body())).not.toHaveProperty("thinkingLevel");
 
-    const closed = await capture_request({
-      response: {
-        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
-      },
-    });
-    await translate({
-      model_id: "gemini-3.1-pro-low",
-      thinking_level: "DEFAULT",
-    });
-    expect(closed.body()["model"]).toBe("gemini-3.1-pro-low");
-    expect(closed.body()["request"]).toMatchObject({
-      labels: { model_enum: "MODEL_PLACEHOLDER_M36" },
-      generationConfig: {
-        maxOutputTokens: 65_535,
-        thinkingConfig: { includeThoughts: false, thinkingBudget: 0 },
-      },
-    });
-    expect(generation_config(closed.body())).not.toHaveProperty("thinkingLevel");
+    for (const thinking_level of ["DEFAULT", "OFF"] as const) {
+      const closed = await capture_request({
+        response: {
+          candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        },
+      });
+      await translate({
+        model_id: "gemini-3.1-pro-low",
+        thinking_level,
+      });
+      expect(closed.body()["model"]).toBe("gemini-3.1-pro-low");
+      expect(closed.body()["request"]).toMatchObject({
+        labels: { model_enum: "MODEL_PLACEHOLDER_M36" },
+        generationConfig: {
+          maxOutputTokens: 65_535,
+          thinkingConfig: { includeThoughts: false, thinkingBudget: 1_001 },
+        },
+      });
+      expect(generation_config(closed.body())).not.toHaveProperty("thinkingLevel");
+    }
   });
 
   it("Claude 按档位发送思考预算和 beta 头，关档两者都省略", async () => {
