@@ -6,6 +6,20 @@ export const zh_cn_model_page = {
     success: "点击登录 …",
     login: "点击登录",
     logout: "退出登录",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "此登录使用 Antigravity 的 Cloud Code Assist 接口。该用法违反 Antigravity 服务条款，有账号封禁风险，仅供个人使用。",
+    paste_callback: "回调链接",
+    paste_callback_placeholder: "粘贴整条回调链接，或只粘贴授权码",
+    paste_callback_submit: "使用回调登录",
+    paste_callback_hint:
+      "如果浏览器无法打开本机回调页，把地址栏里的整条链接粘贴到这里。只粘贴授权码也可以。",
+    paste_callback_empty: "请粘贴回调链接或授权码。",
+    paste_callback_unreadable: "这段内容里没有授权码。",
+    paste_callback_state: "回调 state 与这次登录不一致。",
+    paste_callback_used: "这次登录已经收到回调。",
+    paste_callback_missing: "当前没有等待回调的登录。",
   },
   title: "模型管理",
   category: {

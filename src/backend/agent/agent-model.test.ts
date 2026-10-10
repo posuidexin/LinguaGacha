@@ -1,10 +1,12 @@
 import { normalizeContext, type ProviderStreams } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { JsonRecord } from "../../domain/json";
+import { is_json_record } from "../../domain/json";
 import { Model, type ModelApiFormat } from "../../domain/model";
+import { AppError } from "../../shared/error";
 import { resolve_model_capability, type PiCatalogModel } from "../llm/model-capability";
 import { read_builtin_pi_models } from "../llm/pi-model-catalog";
 import { register_agent_model, resolve_agent_batch_translation_model } from "./agent-model";
@@ -72,7 +74,10 @@ describe("Agent 批量翻译模型", () => {
 
       const result = resolve_agent_batch_translation_model(config, agent_model, models);
 
-      expect(result.to_json()).toEqual({ ...agent_model.to_json(), thinking: { level: expected } });
+      expect(result.to_json()).toEqual({
+        ...agent_model.to_json(),
+        thinking: { level: expected },
+      });
       expect(agent_model.thinking.level).toBe(current);
       expect(config).toEqual(original);
     },
@@ -84,7 +89,10 @@ describe("Agent 批量翻译模型", () => {
       "a",
     );
     const config = {
-      model_selection: { agent: "b", agent_batch_translation: null as string | null },
+      model_selection: {
+        agent: "b",
+        agent_batch_translation: null as string | null,
+      },
       models: [{ ...agent_model.to_json(), thinking: { level: "HIGH" } }],
     };
     const models: PiCatalogModel[] = [
@@ -121,6 +129,224 @@ beforeEach(() => {
 });
 
 describe("Agent 模型注册", () => {
+  it("Google Antigravity 用解析后的 token 发送工具请求，并在下一轮使用新 token", async () => {
+    const runtime = createModels();
+    let token = "current-token";
+    const resolve = vi.fn(async () => ({
+      apiKey: token,
+      project_id: "project-1",
+    }));
+    const resolved = register_agent_model(
+      runtime,
+      build_config("Google", {
+        auth_type: "oauth",
+        oauth_provider: "google-antigravity",
+        api_url: "https://daily-cloudcode-pa.googleapis.com",
+        model_id: "gemini-3.1-pro",
+        request: {
+          extra_headers_custom_enable: true,
+          extra_headers: { "X-Test": "yes" },
+          extra_body_custom_enable: true,
+          extra_body: { marker: true },
+        },
+        generation: {
+          temperature_custom_enable: true,
+          temperature: 0.2,
+          top_p_custom_enable: true,
+          top_p: 0.8,
+        },
+      }),
+      TEST_REQUEST_IDENTITY,
+      catalog,
+      { bind: () => "bound-session", resolve },
+    );
+    expect((await runtime.getAvailable("google")).map((model) => model.id)).toContain(
+      "gemini-3.1-pro",
+    );
+    expect(resolve).not.toHaveBeenCalled();
+    const captures: Array<{ url: string; headers: Headers; body: JsonRecord }> = [];
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      captures.push({
+        url: request.url,
+        headers: request.headers,
+        body: (await request.json()) as JsonRecord,
+      });
+      return new Response(
+        `data: ${JSON.stringify({
+          response: {
+            candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+          },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    const user = { role: "user" as const, content: "hello", timestamp: 1 };
+    const lookup = {
+      name: "lookup",
+      description: "Look up",
+      parameters: {
+        type: "object" as const,
+        properties: { q: { type: "string" as const } },
+      },
+    };
+    const first = await runtime
+      .streamSimple(
+        resolved.model,
+        { systemPrompt: "rules", tools: [lookup], messages: [user] },
+        { fetch, apiKey: "stale-sdk-token", maxRetries: 0 },
+      )
+      .result();
+    expect(first.stopReason).toBe("stop");
+    expect(first.content).toEqual([expect.objectContaining({ type: "text", text: "ok" })]);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(captures[0]?.url).toContain("/v1internal:streamGenerateContent?alt=sse");
+    expect(captures[0]?.headers.get("authorization")).toBe("Bearer current-token");
+    expect(captures[0]?.headers.get("user-agent")).toMatch(/^antigravity\/hub\//u);
+    expect(captures[0]?.headers.get("x-test")).toBe("yes");
+    expect(captures[0]?.body).toMatchObject({
+      marker: true,
+      project: "project-1",
+      model: "gemini-3.1-pro-low",
+      userAgent: "antigravity",
+      requestType: "agent",
+    });
+    const first_request = captures[0]?.body["request"];
+    if (!is_json_record(first_request)) throw new Error("缺少 Antigravity request");
+    expect(first_request["systemInstruction"]).toEqual({
+      role: "user",
+      parts: [{ text: "rules" }],
+    });
+    expect(first_request["toolConfig"]).toEqual({
+      functionCallingConfig: { mode: "VALIDATED" },
+    });
+    expect(JSON.stringify(first_request["tools"])).toContain("parametersJsonSchema");
+    expect(first_request).not.toHaveProperty("safetySettings");
+    expect(first_request["generationConfig"]).toMatchObject({
+      temperature: 0.2,
+      topP: 0.8,
+      maxOutputTokens: 65_535,
+      thinkingConfig: { includeThoughts: false, thinkingBudget: 1_001 },
+    });
+
+    token = "refreshed-token";
+    const second = await runtime
+      .streamSimple(
+        resolved.model,
+        {
+          tools: [lookup],
+          messages: [
+            user,
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "call_1",
+                  name: "lookup",
+                  arguments: { q: "a" },
+                },
+              ],
+              api: resolved.model.api,
+              provider: resolved.model.provider,
+              model: resolved.model.id,
+              usage: first.usage,
+              stopReason: "toolUse",
+              timestamp: 2,
+            },
+            {
+              role: "toolResult",
+              toolCallId: "call_1",
+              toolName: "lookup",
+              content: [{ type: "text", text: "found" }],
+              isError: false,
+              timestamp: 3,
+            },
+          ],
+        },
+        { fetch, apiKey: "stale-sdk-token", maxRetries: 0 },
+      )
+      .result();
+    expect(second.stopReason).toBe("stop");
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(captures[1]?.headers.get("authorization")).toBe("Bearer refreshed-token");
+    const second_request = captures[1]?.body["request"];
+    if (!is_json_record(second_request)) throw new Error("缺少后续 request");
+    expect(second_request["contents"]).toEqual([
+      { role: "user", parts: [{ text: "hello" }] },
+      {
+        role: "model",
+        parts: [
+          {
+            functionCall: { name: "lookup", args: { q: "a" } },
+            thoughtSignature: "skip_thought_signature_validator",
+          },
+        ],
+      },
+      {
+        role: "user",
+        parts: [
+          {
+            functionResponse: { name: "lookup", response: { output: "found" } },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("Google Antigravity 缺少登录时拒绝注册，临时故障仍可被 Agent 重试", async () => {
+    expect(() =>
+      register_agent_model(
+        createModels(),
+        build_config("Google", {
+          auth_type: "oauth",
+          oauth_provider: "google-antigravity",
+          api_url: "https://daily-cloudcode-pa.googleapis.com",
+          model_id: "gemini-3.1-pro",
+        }),
+        TEST_REQUEST_IDENTITY,
+        catalog,
+      ),
+    ).toThrow(expect.objectContaining({ code: "model.auth_required" }));
+
+    const runtime = createModels();
+    const resolved = register_agent_model(
+      runtime,
+      build_config("Google", {
+        auth_type: "oauth",
+        oauth_provider: "google-antigravity",
+        api_url: "https://daily-cloudcode-pa.googleapis.com",
+        model_id: "gemini-3.1-pro",
+      }),
+      TEST_REQUEST_IDENTITY,
+      catalog,
+      {
+        bind: () => "session",
+        resolve: async () => {
+          throw new AppError("model.provider_failed", {
+            message: "slow down",
+            diagnostic_context: { retryable: true, status: 429 },
+          });
+        },
+      },
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const message = await runtime
+      .streamSimple(
+        resolved.model,
+        { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+        {
+          fetch,
+          maxRetries: 0,
+        },
+      )
+      .result();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(message.stopReason).toBe("error");
+    expect(message.errorMessage).toContain("429");
+    expect(message.errorMessage).toContain("slow down");
+    expect(isRetryableAssistantError(message)).toBe(true);
+  });
   it.each([
     [429, "subscription_sharing_usage_limit_exceeded", false],
     [503, "subscription_sharing_usage_unavailable", true],
@@ -133,7 +359,10 @@ describe("Agent 模型注册", () => {
     const runtime = createModels();
     const resolved = register_agent_model(
       runtime,
-      build_config("OpenAIResponses", { auth_type: "oauth", api_url: "https://api.openai.com/v1" }),
+      build_config("OpenAIResponses", {
+        auth_type: "oauth",
+        api_url: "https://api.openai.com/v1",
+      }),
       TEST_REQUEST_IDENTITY,
       catalog,
       { bind: () => "session", resolve: async () => ({ apiKey: "token" }) },
@@ -190,7 +419,11 @@ describe("Agent 模型注册", () => {
         status: "completed",
       };
       const events = [
-        { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+        {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: { ...call, arguments: "" },
+        },
         { type: "response.output_item.done", output_index: 0, item: call },
         {
           type: "response.completed",
@@ -265,7 +498,10 @@ describe("Agent 模型注册", () => {
     ]);
     expect(bodies[1]?.["input"]).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "function_call", namespace: "linguagacha" }),
+        expect.objectContaining({
+          type: "function_call",
+          namespace: "linguagacha",
+        }),
       ]),
     );
     expect(resolve.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -298,7 +534,10 @@ describe("Agent 模型注册", () => {
           maxRetries: 0,
           // 请求身份由 SDK 当前分支决定，模型注册阶段不能冻结它。
           sessionId: "sdk-summary",
-          transformHeaders: () => ({ "x-opencode-session": "sdk-summary", "User-Agent": "pi" }),
+          transformHeaders: () => ({
+            "x-opencode-session": "sdk-summary",
+            "User-Agent": "pi",
+          }),
         },
       )
       .result();
@@ -310,7 +549,10 @@ describe("Agent 模型注册", () => {
 
   it("将统一解析的 Agent 自动容量注册到运行时", async () => {
     const runtime = createModels();
-    const config = { api_format: "OpenAIResponses", model_id: "deepseek-flash" };
+    const config = {
+      api_format: "OpenAIResponses",
+      model_id: "deepseek-flash",
+    };
     const { agent_limits } = resolve_model_capability(
       Model.from_json(config, "active"),
       catalog.read_models(),
@@ -426,7 +668,10 @@ describe("Agent 模型注册", () => {
       { messages: [], reasoning_effort: "medium" },
       resolved.model,
     );
-    expect(payload).toMatchObject({ max_tokens: 123, reasoning_effort: "high" });
+    expect(payload).toMatchObject({
+      max_tokens: 123,
+      reasoning_effort: "high",
+    });
   });
 
   it("同一运行时重新注册模型时采用最新容量", async () => {
@@ -441,7 +686,10 @@ describe("Agent 模型注册", () => {
       catalog,
     );
 
-    expect(resolved.model).toMatchObject({ contextWindow: 400_000, maxTokens: 50_000 });
+    expect(resolved.model).toMatchObject({
+      contextWindow: 400_000,
+      maxTokens: 50_000,
+    });
   });
 
   it("GPT Responses 注册模型明确支持的思考等级", async () => {
@@ -547,7 +795,9 @@ describe("Agent 模型注册", () => {
     const options = api_mocks.streamSimple.mock.calls.at(-1)?.[2];
     expect(options?.headers).toEqual({ "User-Agent": TEST_USER_AGENT });
     if (options?.onPayload === undefined) throw new Error("Agent 缺少 provider payload hook");
-    expect(await options.onPayload({ messages: [] }, resolved.model)).toEqual({ messages: [] });
+    expect(await options.onPayload({ messages: [] }, resolved.model)).toEqual({
+      messages: [],
+    });
   });
 
   it("Agent 使用统一 policy 归一后的模型 URL", async () => {

@@ -230,11 +230,16 @@ export function register_api_routes(context: ApiRouteContext): void {
   context.postJson("/api/models/auth/snapshot", () => ({
     snapshot: services.modelAuth.snapshot(),
   }));
-  context.postJson("/api/models/auth/login", () => services.modelAuth.login());
-  context.postJson("/api/models/auth/cancel", (body) =>
-    services.modelAuth.cancel_login(body["id"]),
+  context.postJson("/api/models/auth/login", (body) => services.modelAuth.login(body["provider"]));
+  context.postJson("/api/models/auth/callback", (body) =>
+    services.modelAuth.submit_callback(body["provider"], body["id"], body["callback"]),
   );
-  context.postJson("/api/models/auth/logout", () => services.modelAuth.logout());
+  context.postJson("/api/models/auth/cancel", (body) =>
+    services.modelAuth.cancel_login(body["provider"], body["id"]),
+  );
+  context.postJson("/api/models/auth/logout", (body) =>
+    services.modelAuth.logout(body["provider"]),
+  );
   context.app.get("/api/models/selection", (hono_context) =>
     hono_context.json(ok(models.get_selection_snapshot())),
   );

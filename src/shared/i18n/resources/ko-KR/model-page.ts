@@ -8,6 +8,20 @@ export const ko_kr_model_page = {
     success: "클릭하여 로그인 …",
     login: "클릭하여 로그인",
     logout: "로그아웃",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "이 로그인은 Antigravity의 Cloud Code Assist 인터페이스를 사용합니다. 이 사용은 Antigravity 서비스 약관을 위반하며 계정 정지 위험이 있고, 개인 용도로만 사용하세요.",
+    paste_callback: "콜백 링크",
+    paste_callback_placeholder: "콜백 URL 전체 또는 인증 코드만 붙여넣기",
+    paste_callback_submit: "콜백으로 로그인",
+    paste_callback_hint:
+      "브라우저가 로컬 콜백 페이지를 열지 못하면 주소창의 URL 전체를 여기에 붙여넣으세요. 인증 코드만 붙여넣어도 됩니다.",
+    paste_callback_empty: "콜백 URL 또는 인증 코드를 붙여넣으세요.",
+    paste_callback_unreadable: "이 내용에서 인증 코드를 찾을 수 없습니다.",
+    paste_callback_state: "콜백 state가 이번 로그인과 일치하지 않습니다.",
+    paste_callback_used: "이 로그인은 이미 콜백을 받았습니다.",
+    paste_callback_missing: "콜백을 기다리는 로그인이 없습니다.",
   },
   title: "모델 관리",
   category: {

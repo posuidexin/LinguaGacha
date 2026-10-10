@@ -8,6 +8,20 @@ export const ja_jp_model_page = {
     success: "クリックしてログイン …",
     login: "クリックしてログイン",
     logout: "ログアウト",
+    provider_chatgpt: "ChatGPT",
+    provider_google_antigravity: "Google Antigravity",
+    antigravity_personal_use:
+      "このログインは Antigravity の Cloud Code Assist インターフェースを使います。この利用は Antigravity の利用規約に違反し、アカウント停止の可能性があり、個人利用に限られます。",
+    paste_callback: "コールバックリンク",
+    paste_callback_placeholder: "コールバック URL 全体、または認可コードだけを貼り付け",
+    paste_callback_submit: "コールバックでログイン",
+    paste_callback_hint:
+      "ブラウザーがローカルのコールバックページを開けない場合は、アドレスバーの URL をそのまま貼り付けてください。認可コードだけでも構いません。",
+    paste_callback_empty: "コールバック URL または認可コードを貼り付けてください。",
+    paste_callback_unreadable: "この内容から認可コードを読み取れません。",
+    paste_callback_state: "コールバックの state が今回のログインと一致しません。",
+    paste_callback_used: "このログインはすでにコールバックを受け取っています。",
+    paste_callback_missing: "コールバックを待っているログインがありません。",
   },
   title: "モデル管理",
   category: {

@@ -6,7 +6,8 @@ import {
   apply_model_auth_snapshot,
   useModelAuthSnapshot,
 } from "@frontend/app/state/model-auth-store";
-import type { ChatGPTAuthSnapshot } from "@shared/model-auth";
+import type { OAuthProvider } from "@domain/model";
+import type { ModelAuthSnapshot } from "@shared/model-auth";
 import { LogIn, LogOut } from "lucide-react";
 import {
   AppDropdownMenuGroup,
@@ -16,17 +17,20 @@ import {
 
 /** 账户只通过模型管理通道操作；目录和接口测试由原有按钮触发。 */
 export function ChatGPTAccountMenu(props: {
+  provider?: OAuthProvider;
   readonly: boolean;
   on_logout: () => void;
   on_login: () => void;
   children: ReactNode;
 }): JSX.Element {
   const { t } = useI18n();
+  const provider = props.provider ?? "chatgpt";
   const snapshot = useModelAuthSnapshot();
+  const connected = snapshot?.providers[provider].connected === true;
   useEffect(() => {
     let cancelled = false;
     // 只补读本地账户摘要，让 CLI 的退出或重新登录在再次打开设置时可见。
-    void api_fetch<{ snapshot: ChatGPTAuthSnapshot }>("/api/models/auth/snapshot", {})
+    void api_fetch<{ snapshot: ModelAuthSnapshot }>("/api/models/auth/snapshot", {})
       .then((result) => {
         if (!cancelled) apply_model_auth_snapshot(result.snapshot);
       })
@@ -43,12 +47,12 @@ export function ChatGPTAccountMenu(props: {
       <AppDropdownMenuItem
         disabled={props.readonly}
         onClick={() => {
-          if (snapshot?.connected) props.on_logout();
+          if (connected) props.on_logout();
           else props.on_login();
         }}
       >
-        {snapshot?.connected ? <LogOut /> : <LogIn />}
-        {t(snapshot?.connected ? "model_page.auth.logout" : "model_page.auth.login")}
+        {connected ? <LogOut /> : <LogIn />}
+        {t(connected ? "model_page.auth.logout" : "model_page.auth.login")}
       </AppDropdownMenuItem>
     </AppDropdownMenuGroup>
   );
@@ -56,14 +60,14 @@ export function ChatGPTAccountMenu(props: {
   // 普通模型操作保持同一位置与组件身份，登录置顶、退出置底共用账户快照。
   return (
     <>
-      {!snapshot?.connected ? (
+      {!connected ? (
         <>
           {account_action}
           <AppDropdownMenuSeparator />
         </>
       ) : null}
       {props.children}
-      {snapshot?.connected ? (
+      {connected ? (
         <>
           <AppDropdownMenuSeparator />
           {account_action}

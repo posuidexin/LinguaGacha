@@ -1,8 +1,9 @@
 import { contentText, type AssistantMessage } from "@earendil-works/pi-ai";
 import { read_json_integer } from "../../domain/json";
 
-import { log_error_from_message, to_log_error, type LogError } from "../../shared/error";
+import { AppError, log_error_from_message, to_log_error, type LogError } from "../../shared/error";
 import {
+  read_custom_number,
   read_model_request_snapshot,
   read_request_timeout_ms,
   type ModelRequestSnapshot,
@@ -13,12 +14,12 @@ import type { PiModelCatalogReader } from "./pi-model-catalog";
 import { DEFAULT_MODEL_AGENT_CONFIG } from "../../domain/model-agent";
 import type { LLMRequestBody, LLMClientPort, LLMRequestResult } from "./llm-types";
 import { with_http_response_info } from "../network/http-response-info";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
-import { AppError } from "../../shared/error";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
+import { request_antigravity_text, type AntigravityCompletion } from "./antigravity-cloud-code";
 import { observe_chatgpt_request } from "./chatgpt-request";
 
 interface LLMClientOptions {
-  auth?: Pick<ChatGPTAuthService, "bind" | "resolve">;
+  auth?: ModelOAuthPort;
   userAgent: string; // 由应用元信息层注入，LLMClient 不读取 version.txt
   catalog: PiModelCatalogReader;
 }
@@ -71,6 +72,10 @@ export class LLMClient implements LLMClientPort {
       if (signal.aborted) {
         return empty_llm_result({ cancelled: true });
       }
+      if (snapshot.oauth_provider === "google-antigravity") {
+        if (this.auth === undefined) throw new AppError("model.auth_required");
+        return await execute_antigravity_request(this.auth, snapshot, body, controller.signal);
+      }
       const request = resolve_one_shot_pi_request(
         snapshot,
         body.messages,
@@ -87,11 +92,12 @@ export class LLMClient implements LLMClientPort {
           throw error;
         }
       };
-      const observation = snapshot.auth_type === "oauth" ? observe_chatgpt_request() : null;
-      if (snapshot.auth_type === "oauth") {
+      const observation = snapshot.oauth_provider === "chatgpt" ? observe_chatgpt_request() : null;
+      if (snapshot.oauth_provider === "chatgpt") {
         if (this.auth === undefined) throw new AppError("model.auth_required");
         const auth = await this.auth.resolve(
-          body.auth_session ?? this.auth.bind(),
+          "chatgpt",
+          body.auth_session ?? this.auth.bind("chatgpt"),
           controller.signal,
         );
         if (auth.apiKey === undefined) throw new AppError("model.auth_required");
@@ -211,6 +217,64 @@ function read_finish_error(
       [reason_key]: raw_reason,
     });
   }
+  return undefined;
+}
+
+/** Antigravity 不经过 Pi。工具调用只记终态，不把函数调用正文交给译文解析。 */
+async function execute_antigravity_request(
+  auth: ModelOAuthPort,
+  snapshot: ModelRequestSnapshot,
+  body: LLMRequestBody,
+  signal: AbortSignal,
+): Promise<LLMRequestResult> {
+  const credential = await auth.resolve(
+    "google-antigravity",
+    body.auth_session ?? auth.bind("google-antigravity"),
+    signal,
+  );
+  if (
+    credential.apiKey === "" ||
+    credential.project_id === undefined ||
+    credential.project_id === ""
+  )
+    throw new AppError("model.auth_required");
+  const completion = await request_antigravity_text({
+    access_token: credential.apiKey,
+    project_id: credential.project_id,
+    model_id: snapshot.model_id,
+    base_url: snapshot.base_url,
+    messages: body.messages,
+    output_token_limit: snapshot.output_token_limit,
+    thinking_level: snapshot.thinking_level,
+    temperature: read_custom_number(snapshot.generation, "temperature"),
+    top_p: read_custom_number(snapshot.generation, "top_p"),
+    headers: snapshot.headers,
+    extra_body: snapshot.extra_body,
+    signal,
+  });
+  const finish_error = read_antigravity_finish_error(completion);
+  return {
+    response_think: completion.response_think,
+    response_result: finish_error === undefined ? completion.response_result : "",
+    input_tokens: completion.input_tokens,
+    reasoning_tokens: completion.reasoning_tokens,
+    output_tokens: completion.output_tokens,
+    cancelled: false,
+    timeout: false,
+    ...(finish_error === undefined ? {} : { response_error: finish_error }),
+  };
+}
+
+/** 与 Pi 终态使用同一句用户可见说明，避免两条翻译路径对截断和工具调用说法不一致。 */
+function read_antigravity_finish_error(completion: AntigravityCompletion): LogError | undefined {
+  if (completion.finish === "length")
+    return log_error_from_message("供应商返回长度截断。", {
+      finish_reason: "MAX_TOKENS",
+    });
+  if (completion.finish === "tool")
+    return log_error_from_message("供应商返回工具调用，当前任务不支持。", {
+      finish_reason: "tool",
+    });
   return undefined;
 }
 

@@ -12,7 +12,10 @@ import {
 } from "./llm-request";
 
 const TEST_USER_AGENT = "LinguaGacha/v1.2.3 (https://github.com/neavo/LinguaGacha)";
-const TEST_REQUEST_IDENTITY = { user_agent: TEST_USER_AGENT, session_id: "test-session" };
+const TEST_REQUEST_IDENTITY = {
+  user_agent: TEST_USER_AGENT,
+  session_id: "test-session",
+};
 
 describe("LLM 请求策略", () => {
   it("OAuth 地址及大小写混合认证头不能由配置改写", () => {
@@ -29,11 +32,45 @@ describe("LLM 请求策略", () => {
       read_model_request_snapshot(
         {
           ...model,
-          request: { extra_headers_custom_enable: true, extra_headers: { AUTHORIZATION: "other" } },
+          request: {
+            extra_headers_custom_enable: true,
+            extra_headers: { AUTHORIZATION: "other" },
+          },
         },
         identity,
       ),
     ).toThrow();
+    const antigravity = {
+      auth_type: "oauth",
+      oauth_provider: "google-antigravity",
+      api_format: "Google",
+      api_url: "https://daily-cloudcode-pa.googleapis.com/",
+      model_id: "gemini-3.1-pro",
+    };
+    expect(read_model_request_snapshot(antigravity, identity).base_url).toBe(
+      "https://daily-cloudcode-pa.googleapis.com",
+    );
+    expect(() =>
+      read_model_request_snapshot(
+        {
+          ...antigravity,
+          request: {
+            extra_headers_custom_enable: true,
+            extra_headers: { Authorization: "other" },
+          },
+        },
+        identity,
+      ),
+    ).toThrow(/Reserved header/);
+    expect(() =>
+      read_model_request_snapshot(
+        {
+          ...antigravity,
+          api_url: "https://generativelanguage.googleapis.com",
+        },
+        identity,
+      ),
+    ).toThrow(/Cloud Code Assist/);
   });
 
   it("把模型配置收窄为共享请求快照", () => {
@@ -129,8 +166,12 @@ describe("LLM 请求策略", () => {
       TEST_REQUEST_IDENTITY,
     );
 
-    expect(resolve_one_shot_generation_options(openai)).toEqual({ temperature: 0.3 });
-    expect(resolve_one_shot_generation_options(anthropic_explicit)).toEqual({ maxTokens: 4096 });
+    expect(resolve_one_shot_generation_options(openai)).toEqual({
+      temperature: 0.3,
+    });
+    expect(resolve_one_shot_generation_options(anthropic_explicit)).toEqual({
+      maxTokens: 4096,
+    });
   });
 
   it.each([
@@ -151,7 +192,10 @@ describe("LLM 请求策略", () => {
         "X-OpenCode-Session": "manual-session",
         "user-agent": "Custom/1",
       }),
-    ).toEqual({ "User-Agent": "Custom/1", "x-opencode-session": "manual-session" });
+    ).toEqual({
+      "User-Agent": "Custom/1",
+      "x-opencode-session": "manual-session",
+    });
   });
 
   it.each(["v1", "v1beta", "v1alpha"])("Google 保留显式 API 版本 %s", (version) => {
@@ -162,7 +206,9 @@ describe("LLM 请求策略", () => {
 
   it.each([true, false])("OpenAI 按启用状态 %s 通过正式选项传递 top_p", (enabled) => {
     const snapshot = read_model_request_snapshot(
-      create_model({ generation: { top_p_custom_enable: enabled, top_p: 0.8 } }),
+      create_model({
+        generation: { top_p_custom_enable: enabled, top_p: 0.8 },
+      }),
       TEST_REQUEST_IDENTITY,
     );
     expect(resolve_one_shot_generation_options(snapshot).samplingParams).toEqual(

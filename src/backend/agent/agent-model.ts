@@ -12,6 +12,7 @@ import { normalize_setting_snapshot } from "../../domain/setting";
 import * as AppErrors from "../../shared/error";
 import {
   build_request_headers,
+  read_custom_number,
   read_model_request_snapshot,
   type ModelRequestIdentity,
 } from "../llm/llm-request";
@@ -19,7 +20,8 @@ import { apply_request_overrides } from "../llm/llm-payload";
 import { resolve_model_capability, type PiCatalogModel } from "../llm/model-capability";
 import type { PiModelCatalogReader } from "../llm/pi-model-catalog";
 import { resolve_pi_model, type PiApi } from "../llm/llm-pi";
-import type { ChatGPTAuthService } from "../auth/chatgpt-auth-service";
+import type { ModelOAuthPort } from "../auth/model-oauth-port";
+import { stream_antigravity_agent } from "../llm/antigravity-agent";
 import { observe_chatgpt_request } from "../llm/chatgpt-request";
 import { read_config_model_records, resolve_model_for_usage } from "../model/model-config-resolver";
 
@@ -52,7 +54,7 @@ export function register_agent_model(
   config: JsonRecord,
   identity: Pick<ModelRequestIdentity, "user_agent">,
   catalog: PiModelCatalogReader,
-  auth?: Pick<ChatGPTAuthService, "bind" | "resolve">,
+  auth?: ModelOAuthPort,
 ): {
   model: PiModel<PiApi>;
   thinkingLevel: PiModelThinkingLevel;
@@ -62,7 +64,9 @@ export function register_agent_model(
   if (raw_model === null) throw new AppErrors.AppError("model.not_found");
   const configured_model = Model.from_json(raw_model, String(raw_model["id"] ?? ""));
   const capability = resolve_model_capability(configured_model, catalog.read_models());
-  const snapshot = read_model_request_snapshot(raw_model, { user_agent: identity.user_agent });
+  const snapshot = read_model_request_snapshot(raw_model, {
+    user_agent: identity.user_agent,
+  });
   const api_key = snapshot.api_keys[0] ?? "no_key_required";
   const configured_name = String(raw_model["name"] ?? "").trim();
   const pi = resolve_pi_model(snapshot, capability, {
@@ -88,27 +92,71 @@ export function register_agent_model(
       onPayload: (payload, active_model) =>
         apply_request_overrides(snapshot, payload, active_model.compat),
     });
-  if (snapshot.auth_type === "oauth") {
+  if (snapshot.oauth_provider === "google-antigravity") {
     if (auth === undefined) throw new AppErrors.AppError("model.auth_required");
-    const session_id = auth.bind();
+    const session_id = auth.bind("google-antigravity");
+    // Pi 会把 provider.resolve 的异常包成不含 HTTP 状态的 ModelsError，Agent 因此无法重试。
+    // 可用检查只声明已登录；token 和 project_id 在流内解析，临时故障保留状态码。
+    const authenticated_stream: ProviderStreams["streamSimple"] = (
+      active_model,
+      active_context,
+      options,
+    ) =>
+      lazyStream(active_model, async () => {
+        const credential = await auth
+          .resolve("google-antigravity", session_id, options?.signal)
+          .catch(rethrow_retryable_auth_error);
+        const project_id = credential.project_id?.trim() ?? "";
+        if (credential.apiKey.trim() === "" || project_id === "")
+          throw new AppErrors.AppError("model.auth_required");
+        const temperature = read_custom_number(snapshot.generation, "temperature");
+        const top_p = read_custom_number(snapshot.generation, "top_p");
+        return stream_antigravity_agent(active_model, active_context, {
+          ...options,
+          apiKey: credential.apiKey,
+          project_id,
+          headers: request_headers(options?.sessionId),
+          extra_body: snapshot.extra_body,
+          ...(temperature === null ? {} : { temperature }),
+          ...(top_p === null ? {} : { top_p }),
+        });
+      });
+    models.setProvider(
+      createProvider({
+        id: pi.model.provider,
+        name: "Google Antigravity",
+        baseUrl: pi.model.baseUrl,
+        models: [pi.model],
+        auth: {
+          apiKey: {
+            name: "Google Antigravity",
+            check: async () => ({
+              type: "oauth",
+              source: "Google Antigravity",
+            }),
+            resolve: async () => ({
+              auth: { apiKey: "google-antigravity" },
+              source: "Google Antigravity",
+            }),
+          },
+        },
+        api: {
+          stream: authenticated_stream,
+          streamSimple: authenticated_stream,
+        },
+      }),
+    );
+  } else if (snapshot.oauth_provider === "chatgpt") {
+    if (auth === undefined) throw new AppErrors.AppError("model.auth_required");
+    const session_id = auth.bind("chatgpt");
     const authenticated_stream =
       (stream: ProviderStreams["streamSimple"]): ProviderStreams["streamSimple"] =>
       (active_model, context, options) =>
         lazyStream(active_model, async () => {
           // 压缩或 SDK 重试可能传回旧 apiKey，真实派发点重新解析并覆盖它。
           const credential = await auth
-            .resolve(session_id, options?.signal)
-            .catch((error: unknown) => {
-              // SDK 的重试入口消费 AssistantMessage；只把已分类的临时故障映射为其标准信号。
-              if (
-                error instanceof AppErrors.AppError &&
-                error.diagnostic_context["retryable"] === true
-              )
-                throw new Error(`${error.diagnostic_context["status"] ?? 503}: ${error.message}`, {
-                  cause: error,
-                });
-              throw error;
-            });
+            .resolve("chatgpt", session_id, options?.signal)
+            .catch(rethrow_retryable_auth_error);
           const observation = observe_chatgpt_request(options?.fetch);
           const source = stream(active_model, context, {
             ...options,
@@ -152,7 +200,7 @@ export function register_agent_model(
             check: async () => ({ type: "oauth", source: "ChatGPT" }),
             // 请求派发时由应用认证服务解析凭据，SDK 传入的旧 apiKey 不参与解析。
             resolve: async ({ signal }) => ({
-              auth: await auth.resolve(session_id, signal),
+              auth: await auth.resolve("chatgpt", session_id, signal),
               source: "ChatGPT",
             }),
           },
@@ -173,7 +221,10 @@ export function register_agent_model(
         auth: {
           apiKey: {
             name: provider_name,
-            resolve: async () => ({ auth: { apiKey: api_key }, source: "LinguaGacha" }),
+            resolve: async () => ({
+              auth: { apiKey: api_key },
+              source: "LinguaGacha",
+            }),
           },
         },
         api: { stream: configured_stream, streamSimple: configured_stream },
@@ -196,4 +247,15 @@ export function register_agent_model(
     thinkingLevel: pi.thinkingLevel,
     model_config: configured_model,
   };
+}
+
+/** SDK 重试只看 AssistantMessage 文本；已分类的临时故障要带上 HTTP 状态。 */
+function rethrow_retryable_auth_error(error: unknown): never {
+  if (error instanceof AppErrors.AppError && error.diagnostic_context["retryable"] === true) {
+    const status = error.diagnostic_context["status"];
+    throw new Error(`${typeof status === "number" ? status : 503}: ${error.message}`, {
+      cause: error,
+    });
+  }
+  throw error;
 }

@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, type MutableRefObject } from "react";
 
 import { api_get, api_fetch, open_event_stream } from "@frontend/app/desktop/desktop-api";
 import { apply_model_auth_snapshot } from "./model-auth-store";
-import { MODEL_AUTH_CHANGED_EVENT_TOPIC, type ChatGPTAuthSnapshot } from "@shared/model-auth";
+import { MODEL_AUTH_CHANGED_EVENT_TOPIC, type ModelAuthSnapshot } from "@shared/model-auth";
 import { push_toast } from "@frontend/app/feedback/desktop-toast";
 import { resolve_app_locale, type AppLanguage } from "@domain/app-language";
 import { format_i18n_message } from "@shared/i18n";
@@ -264,7 +264,7 @@ export function useDesktopEventStream(options: DesktopEventStreamOptions): void 
             return;
           }
           refresh_catalog();
-          void api_fetch<{ snapshot: ChatGPTAuthSnapshot }>("/api/models/auth/snapshot", {})
+          void api_fetch<{ snapshot: ModelAuthSnapshot }>("/api/models/auth/snapshot", {})
             .then((payload) => {
               if (!cancelled) apply_model_auth_snapshot(payload.snapshot);
             })
@@ -289,7 +289,7 @@ export function useDesktopEventStream(options: DesktopEventStreamOptions): void 
           event: MessageEvent<string>,
         ) => {
           const payload = parse_event_payload(event) as {
-            snapshot: ChatGPTAuthSnapshot;
+            snapshot: ModelAuthSnapshot;
           };
           apply_model_auth_snapshot(payload.snapshot);
         }) as EventListener);

@@ -2,7 +2,12 @@ import { act, type JSX } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apply_model_auth_snapshot } from "@frontend/app/state/model-auth-store";
-import type { ChatGPTAuthSnapshot, ChatGPTLoginResponse } from "@shared/model-auth";
+import type {
+  ModelAuthLoginResponse,
+  ModelAuthSnapshot,
+  OAuthLoginSnapshot,
+} from "@shared/model-auth";
+import { DesktopApiError } from "@frontend/app/desktop/desktop-api";
 import { ChatGPTLoginDialog } from "./dialogs/chatgpt-login-dialog";
 import { useChatGPTLogin } from "./use-chatgpt-login";
 
@@ -22,8 +27,24 @@ vi.mock("@frontend/app/locale/locale-context", () => ({
 
 let root: Root;
 let container: HTMLDivElement;
-let snapshot: ChatGPTAuthSnapshot;
-let response: ChatGPTLoginResponse;
+let instance_id: string;
+let response: ModelAuthLoginResponse;
+
+/** 登录测试只观察 ChatGPT 账户，Antigravity 保持未连接。 */
+function account(fields: {
+  revision: number;
+  connected?: boolean;
+  login?: OAuthLoginSnapshot | null;
+}): ModelAuthSnapshot {
+  return {
+    instance_id,
+    revision: fields.revision,
+    providers: {
+      chatgpt: { connected: fields.connected === true, login: fields.login ?? null },
+      "google-antigravity": { connected: false, login: null },
+    },
+  };
+}
 
 /** 用真实弹窗观察 Hook 的跨请求生命周期和最终用户反馈。 */
 function LoginPage(): JSX.Element {
@@ -37,6 +58,13 @@ function LoginPage(): JSX.Element {
         }}
       >
         start
+      </button>
+      <button
+        onClick={() => {
+          void login.start("google-antigravity");
+        }}
+      >
+        antigravity
       </button>
       <ChatGPTLoginDialog login={login} />
     </>
@@ -61,21 +89,16 @@ beforeEach(async () => {
   mocks.api.mockReset();
   mocks.open.mockReset();
   mocks.toast.mockReset();
-  snapshot = {
-    instance_id: crypto.randomUUID(),
-    revision: 1,
-    connected: false,
-    login: { id: "first", status: "pending" },
-  };
+  instance_id = crypto.randomUUID();
   response = {
     id: "first",
     url: "https://auth.openai.com/api/accounts/authorize?state=first",
-    snapshot,
+    snapshot: account({ revision: 1, login: { id: "first", status: "pending" } }),
   };
-  apply_model_auth_snapshot({ ...snapshot, revision: 0, login: null });
+  apply_model_auth_snapshot(account({ revision: 0 }));
   mocks.api.mockImplementation(async (route: string) =>
     route.endsWith("/cancel")
-      ? { snapshot: { ...snapshot, revision: 2, login: { id: "first", status: "cancelled" } } }
+      ? { snapshot: account({ revision: 2, login: { id: "first", status: "cancelled" } }) }
       : response,
   );
   container = document.createElement("div");
@@ -106,10 +129,11 @@ describe("ChatGPT 登录交互", () => {
     await click("model_page.auth.open_login_page");
     expect(mocks.open).toHaveBeenCalledWith(response.url);
     expect(button("app.action.cancel")).toBeDefined();
+    expect(dialog.textContent).not.toContain("model_page.auth.paste_callback");
   });
 
   it("准备期间取消等待启动收尾，重开以后旧结果无法结束新窗口", async () => {
-    const pending = Promise.withResolvers<ChatGPTLoginResponse>();
+    const pending = Promise.withResolvers<ModelAuthLoginResponse>();
     mocks.api.mockReturnValueOnce(pending.promise);
     await click("start");
     expect(button("model_page.auth.open_login_page").disabled).toBe(true);
@@ -119,25 +143,26 @@ describe("ChatGPT 登录交互", () => {
     await act(async () => {
       pending.resolve(response);
     });
-    expect(mocks.api).toHaveBeenCalledWith("/api/models/auth/cancel", { id: "first" });
+    expect(mocks.api).toHaveBeenCalledWith("/api/models/auth/cancel", {
+      id: "first",
+      provider: "chatgpt",
+    });
     expect(button("start").disabled).toBe(false);
     expect(mocks.toast).not.toHaveBeenCalled();
     response = {
       ...response,
       id: "second",
       url: "https://auth.openai.com/authorize?state=second",
-      snapshot: { ...snapshot, revision: 3, login: { id: "second", status: "pending" } },
+      snapshot: account({ revision: 3, login: { id: "second", status: "pending" } }),
     };
-    const next = Promise.withResolvers<ChatGPTLoginResponse>();
+    const next = Promise.withResolvers<ModelAuthLoginResponse>();
     mocks.api.mockReturnValueOnce(next.promise);
     await click("start");
     // 前一轮取消的 SSE 晚于 HTTP 到达，新一轮此时尚未取得授权 ID。
     await act(async () => {
-      apply_model_auth_snapshot({
-        ...snapshot,
-        revision: 2,
-        login: { id: "first", status: "cancelled" },
-      });
+      apply_model_auth_snapshot(
+        account({ revision: 2, login: { id: "first", status: "cancelled" } }),
+      );
     });
     expect(button("start").disabled).toBe(true);
     expect(button("app.action.cancel")).toBeDefined();
@@ -149,15 +174,14 @@ describe("ChatGPT 登录交互", () => {
   });
 
   it("成功事件先于启动响应时仍能关闭弹窗，重连重复快照只提示一次", async () => {
-    const pending = Promise.withResolvers<ChatGPTLoginResponse>();
+    const pending = Promise.withResolvers<ModelAuthLoginResponse>();
     mocks.api.mockReturnValueOnce(pending.promise);
     await click("start");
-    const completed: ChatGPTAuthSnapshot = {
-      ...snapshot,
+    const completed = account({
       revision: 2,
       connected: true,
       login: { id: "first", status: "succeeded" },
-    };
+    });
     await act(async () => {
       apply_model_auth_snapshot(completed);
       pending.resolve(response);
@@ -175,15 +199,16 @@ describe("ChatGPT 登录交互", () => {
     const message = "fixture authorization failure";
     await click("start");
     await act(async () => {
-      apply_model_auth_snapshot({
-        ...snapshot,
-        revision: 2,
-        login: {
-          id: "first",
-          status: "failed",
-          error: { code: "model.provider_failed", message },
-        },
-      });
+      apply_model_auth_snapshot(
+        account({
+          revision: 2,
+          login: {
+            id: "first",
+            status: "failed",
+            error: { code: "model.provider_failed", message },
+          },
+        }),
+      );
     });
     expect(button("start").disabled).toBe(false);
     expect(mocks.toast).toHaveBeenCalledExactlyOnceWith(
@@ -214,19 +239,18 @@ describe("ChatGPT 登录交互", () => {
   it("页面卸载取消对应授权，取消与提交竞争时应用后端成功结果", async () => {
     await click("start");
     mocks.api.mockResolvedValueOnce({
-      snapshot: {
-        ...snapshot,
+      snapshot: account({
         revision: 2,
         connected: true,
         login: { id: "first", status: "succeeded" },
-      },
+      }),
     });
     await click("app.action.cancel");
     expect(mocks.toast).toHaveBeenCalledExactlyOnceWith("success", "model_page.auth.success");
     response = {
       ...response,
       id: "second",
-      snapshot: { ...snapshot, revision: 3, login: { id: "second", status: "pending" } },
+      snapshot: account({ revision: 3, login: { id: "second", status: "pending" } }),
     };
     await click("start");
     await act(async () => root.unmount());
@@ -235,4 +259,57 @@ describe("ChatGPT 登录交互", () => {
     ).toHaveLength(2);
     root = createRoot(container);
   });
+
+  it("Antigravity 登录提交自己的提供方，并展示个人使用说明", async () => {
+    await click("antigravity");
+    expect(mocks.api).toHaveBeenCalledWith("/api/models/auth/login", {
+      provider: "google-antigravity",
+    });
+    expect(document.body.textContent).toContain("model_page.auth.antigravity_personal_use");
+    expect(document.body.textContent).toContain("model_page.auth.provider_google_antigravity");
+    expect(button("model_page.auth.paste_callback_submit")).toBeDefined();
+    const paste = [...document.querySelectorAll("input")].find((item) => !item.readOnly);
+    if (paste === undefined) throw new Error("缺少回调输入框");
+    await click("model_page.auth.paste_callback_submit");
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "model_page.auth.paste_callback_empty",
+    );
+    expect(mocks.api).not.toHaveBeenCalledWith("/api/models/auth/callback", expect.anything());
+
+    await act(async () => {
+      set_input_value(paste, "http://127.0.0.1:51121/oauth-callback?code=abc&state=state");
+    });
+    mocks.api.mockImplementation(async (route: string) => {
+      if (route.endsWith("/callback"))
+        throw new DesktopApiError({
+          code: "request.validation_failed",
+          message: "The callback state does not match this sign-in.",
+          details: { reason: "state_mismatch" },
+        });
+      return response;
+    });
+    await click("model_page.auth.paste_callback_submit");
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      "model_page.auth.paste_callback_state",
+    );
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+    mocks.api.mockImplementation(async (route: string) =>
+      route.endsWith("/callback")
+        ? { snapshot: account({ revision: 4, login: { id: "first", status: "pending" } }) }
+        : response,
+    );
+    await click("model_page.auth.paste_callback_submit");
+    expect(mocks.api).toHaveBeenCalledWith("/api/models/auth/callback", {
+      provider: "google-antigravity",
+      id: "first",
+      callback: "http://127.0.0.1:51121/oauth-callback?code=abc&state=state",
+    });
+    expect(button("model_page.auth.paste_callback_submit").disabled).toBe(true);
+  });
 });
+
+function set_input_value(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}

@@ -85,14 +85,100 @@ describe("LLMClient", () => {
     for (let attempt = 0; attempt < 2; attempt += 1)
       expect((await client.request(body, signal)).response_result).toBe("ok");
     expect(auth.bind).not.toHaveBeenCalled();
-    expect(auth.resolve.mock.calls.map(([session]) => session)).toEqual([
-      "bound-session",
-      "bound-session",
+    expect(auth.resolve.mock.calls.map(([provider, session]) => [provider, session])).toEqual([
+      ["chatgpt", "bound-session"],
+      ["chatgpt", "bound-session"],
     ]);
     expect(api_mocks.responses.mock.calls.map(([, , options]) => options?.apiKey)).toEqual([
       "token-one",
       "token-two",
     ]);
+  });
+
+  it("Antigravity 单轮翻译直接读取 Cloud Code 文本，不进入 Pi", async () => {
+    const auth = {
+      bind: vi.fn(() => "bound-session"),
+      resolve: vi.fn(async () => ({
+        apiKey: "token",
+        project_id: "projects/1",
+      })),
+    };
+    const client = new LLMClient({
+      userAgent: TEST_USER_AGENT,
+      catalog: { read_models: read_builtin_pi_models },
+      auth,
+    });
+    let request_body: Record<string, unknown> | undefined;
+    let request_headers = new Headers();
+    const fetch_mock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      request_headers = new Headers(init?.headers);
+      request_body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        `data: ${JSON.stringify({
+          response: {
+            candidates: [
+              {
+                content: { parts: [{ text: "译文" }] },
+                finishReason: "STOP",
+              },
+            ],
+            usageMetadata: {
+              promptTokenCount: 4,
+              candidatesTokenCount: 2,
+              thoughtsTokenCount: 0,
+            },
+          },
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    try {
+      await expect(
+        client.request(
+          create_body({
+            auth_type: "oauth",
+            oauth_provider: "google-antigravity",
+            api_format: "Google",
+            api_url: "https://daily-cloudcode-pa.googleapis.com",
+            model_id: "gemini-3.1-pro",
+            request: {
+              extra_headers_custom_enable: true,
+              extra_headers: {
+                "X-Trace": "trace-1",
+                "Content-Type": "text/plain",
+              },
+              extra_body_custom_enable: true,
+              extra_body: { marker: true },
+            },
+          }),
+          new AbortController().signal,
+        ),
+      ).resolves.toMatchObject({
+        response_result: "译文",
+        input_tokens: 4,
+        output_tokens: 2,
+      });
+      expect(api_mocks.google).not.toHaveBeenCalled();
+      expect(auth.bind).toHaveBeenCalledWith("google-antigravity");
+      expect(auth.resolve).toHaveBeenCalledWith(
+        "google-antigravity",
+        "bound-session",
+        expect.any(AbortSignal),
+      );
+      expect(request_body).toMatchObject({
+        project: "projects/1",
+        model: "gemini-3.1-pro-low",
+        marker: true,
+        request: {
+          contents: [{ role: "user", parts: [{ text: "こんにちは" }] }],
+        },
+      });
+      expect(request_headers.get("x-trace")).toBe("trace-1");
+      expect(request_headers.get("authorization")).toBe("Bearer token");
+      expect(request_headers.get("content-type")).toBe("application/json");
+    } finally {
+      fetch_mock.mockRestore();
+    }
   });
   it.each([
     {
@@ -106,7 +192,13 @@ describe("LLMClient", () => {
       expected: { input_tokens: 0, reasoning_tokens: 0, output_tokens: 0 },
     },
     {
-      usage: { input: 1.9, cacheRead: 0, cacheWrite: 0, output: 4, reasoning: 8 },
+      usage: {
+        input: 1.9,
+        cacheRead: 0,
+        cacheWrite: 0,
+        output: 4,
+        reasoning: 8,
+      },
       expected: { input_tokens: 1, reasoning_tokens: 4, output_tokens: 0 },
     },
   ])("供应商用量在客户端归一为有限非负整数：$usage", async ({ usage, expected }) => {
@@ -115,7 +207,10 @@ describe("LLMClient", () => {
         create_message({
           content: [{ type: "text", text: "有效译文" }],
           // 真实接口可能违背 SDK 的声明类型，归一必须发生在跨 worker 之前。
-          usage: { ...create_usage(), ...usage } as unknown as AssistantMessage["usage"],
+          usage: {
+            ...create_usage(),
+            ...usage,
+          } as unknown as AssistantMessage["usage"],
         }),
       ),
     );
@@ -143,12 +238,19 @@ describe("LLMClient", () => {
           created: 0,
           model: "gpt-5-mini",
           choices: [
-            { index: 0, delta: { role: "assistant", content: "有效译文" }, finish_reason: "stop" },
+            {
+              index: 0,
+              delta: { role: "assistant", content: "有效译文" },
+              finish_reason: "stop",
+            },
           ],
           usage: {
             prompt_tokens: "10",
             completion_tokens: "8",
-            prompt_tokens_details: { cached_tokens: "2", cache_write_tokens: "3" },
+            prompt_tokens_details: {
+              cached_tokens: "2",
+              cache_write_tokens: "3",
+            },
             completion_tokens_details: { reasoning_tokens: "3" },
           },
         })}\n\ndata: [DONE]\n\n`,
@@ -189,7 +291,10 @@ describe("LLMClient", () => {
     >("@earendil-works/pi-ai/api/openai-completions.lazy");
     api_mocks.openai.mockImplementationOnce(openAICompletionsApi().stream);
     const body = create_body({
-      request: { extra_headers_custom_enable: true, extra_headers: { "invalid header": "value" } },
+      request: {
+        extra_headers_custom_enable: true,
+        extra_headers: { "invalid header": "value" },
+      },
     });
     await expect(
       create_client().request(body, new AbortController().signal),
@@ -208,7 +313,12 @@ describe("LLMClient", () => {
             { type: "thinking", thinking: " 推理 " },
             { type: "text", text: " 你好 " },
           ],
-          usage: create_usage({ input: 10, output: 7, cacheRead: 2, cacheWrite: 3 }),
+          usage: create_usage({
+            input: 10,
+            output: 7,
+            cacheRead: 2,
+            cacheWrite: 3,
+          }),
         }),
       ),
     );
@@ -245,7 +355,12 @@ describe("LLMClient", () => {
           provider: mock_name,
           api: api_format === "Google" ? "google-generative-ai" : "anthropic-messages",
           content: [{ type: "text", text: "你好" }],
-          usage: create_usage({ input: 10, output: 7, cacheRead: 2, reasoning: 2 }),
+          usage: create_usage({
+            input: 10,
+            output: 7,
+            cacheRead: 2,
+            reasoning: 2,
+          }),
         }),
       ),
     );
@@ -273,7 +388,12 @@ describe("LLMClient", () => {
           api: "openai-responses",
           content: [{ type: "text", text: "你好" }],
           rawStopReason: "completed",
-          usage: create_usage({ input: 10, output: 7, cacheRead: 2, cacheWrite: 3 }),
+          usage: create_usage({
+            input: 10,
+            output: 7,
+            cacheRead: 2,
+            cacheWrite: 3,
+          }),
         }),
       ),
     );
@@ -284,7 +404,11 @@ describe("LLMClient", () => {
       new AbortController().signal,
     );
 
-    expect(result).toMatchObject({ response_result: "你好", input_tokens: 15, output_tokens: 7 });
+    expect(result).toMatchObject({
+      response_result: "你好",
+      input_tokens: 15,
+      output_tokens: 7,
+    });
   });
 
   it.each([
@@ -479,7 +603,11 @@ describe("LLMClient", () => {
 
   it("Sakura 成功正文保留原始纯文本", async () => {
     api_mocks.openai.mockImplementation(() =>
-      completed_stream(create_message({ content: [{ type: "text", text: " 第一行 \n 第二行 " }] })),
+      completed_stream(
+        create_message({
+          content: [{ type: "text", text: " 第一行 \n 第二行 " }],
+        }),
+      ),
     );
     const client = create_client();
 
@@ -530,14 +658,19 @@ function abortable_stream(
       type: "text_delta",
       contentIndex: 0,
       delta: partial_text,
-      partial: create_message({ content: [{ type: "text", text: partial_text }] }),
+      partial: create_message({
+        content: [{ type: "text", text: partial_text }],
+      }),
     });
   }
   const abort = (): void => {
     stream.push({
       type: "error",
       reason: "aborted",
-      error: create_message({ stopReason: "aborted", errorMessage: "请求已中止" }),
+      error: create_message({
+        stopReason: "aborted",
+        errorMessage: "请求已中止",
+      }),
     });
   };
   if (options?.signal?.aborted) abort();

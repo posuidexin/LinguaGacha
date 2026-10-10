@@ -63,12 +63,25 @@ export function normalize_model_speed_level(value: unknown): ModelSpeedLevel {
 export type ModelUsage = (typeof MODEL_USAGES)[number];
 
 export type ModelAuthType = "api_key" | "oauth";
+export const OAUTH_PROVIDERS = ["chatgpt", "google-antigravity"] as const;
+export type OAuthProvider = (typeof OAUTH_PROVIDERS)[number];
 export const CHATGPT_BASE_URL = "https://api.openai.com/v1";
-const CHATGPT_PRESET_ID = "preset-chatgpt";
+/** Cloud Code Assist 的两个官方入口。生成请求可在瞬时失败时改试另一个。 */
+export const ANTIGRAVITY_CLOUD_CODE_ENDPOINTS = [
+  "https://daily-cloudcode-pa.googleapis.com",
+  "https://daily-cloudcode-pa.sandbox.googleapis.com",
+] as const;
+export const ANTIGRAVITY_BASE_URL = ANTIGRAVITY_CLOUD_CODE_ENDPOINTS[0];
+const PINNED_PRESET_IDS = new Set<string>(["preset-chatgpt", "preset-google-antigravity"]);
 
-/** 只固定内置 ChatGPT 预设；副本拥有新 ID，继续使用普通排序。 */
+/** 缺少字段的旧 OAuth 配置仍是 ChatGPT。 */
+export function normalize_oauth_provider(value: unknown): OAuthProvider {
+  return value === "google-antigravity" ? "google-antigravity" : "chatgpt";
+}
+
+/** 固定内置 OAuth 预设；副本拥有新 ID，继续使用普通排序。 */
 export function is_pinned_model(model: Readonly<{ id?: unknown; type?: unknown }>): boolean {
-  return model.id === CHATGPT_PRESET_ID && model.type === "PRESET";
+  return typeof model.id === "string" && PINNED_PRESET_IDS.has(model.id) && model.type === "PRESET";
 }
 /** 执行用途的模型选择与 Agent 批量翻译偏好。 */
 export type ModelSelection = {
@@ -147,6 +160,7 @@ export class Model {
   public readonly api_url: string; // API 地址
   public readonly api_key: string; // API Key
   public readonly auth_type: ModelAuthType; // 认证来源独立于模型名称和协议。
+  public readonly oauth_provider: OAuthProvider | null; // OAuth 才区分账户；密钥模型没有提供方。
   public readonly model_id: string; // 服务商模型 ID
   public readonly agent: ModelAgentConfig; // 0 表示自动的 Agent 容量配置
   public readonly request: ModelRequestConfig; // 请求层配置快照
@@ -163,6 +177,7 @@ export class Model {
     api_url: string;
     api_key: string;
     auth_type: ModelAuthType;
+    oauth_provider: OAuthProvider | null;
     model_id: string;
     agent: ModelAgentConfig;
     request: ModelRequestConfig;
@@ -177,6 +192,7 @@ export class Model {
     this.api_url = fields.api_url;
     this.api_key = fields.api_key;
     this.auth_type = fields.auth_type;
+    this.oauth_provider = fields.oauth_provider;
     this.model_id = fields.model_id;
     this.agent = fields.agent;
     this.request = fields.request;
@@ -192,6 +208,7 @@ export class Model {
     const record = read_json_model_record(payload);
     const model_id = String(record["model_id"] ?? "");
     const agent = normalize_model_agent_config(record["agent"]).config;
+    const auth_type = record["auth_type"] === "oauth" ? "oauth" : "api_key";
     return new Model({
       id: String(record["id"] ?? fallback_id),
       type: Model.normalize_type(record["type"]),
@@ -199,7 +216,9 @@ export class Model {
       api_format: Model.normalize_api_format(record["api_format"]),
       api_url: String(record["api_url"] ?? ""),
       api_key: String(record["api_key"] ?? "no_key_required"),
-      auth_type: record["auth_type"] === "oauth" ? "oauth" : "api_key",
+      auth_type,
+      oauth_provider:
+        auth_type === "oauth" ? normalize_oauth_provider(record["oauth_provider"]) : null,
       model_id,
       agent,
       request: Model.normalize_request_config(record["request"]),
@@ -219,6 +238,7 @@ export class Model {
       api_url: this.api_url,
       api_key: this.api_key,
       auth_type: this.auth_type,
+      ...(this.oauth_provider === null ? {} : { oauth_provider: this.oauth_provider }),
       model_id: this.model_id,
       agent: this.agent,
       request: this.request,

@@ -3,11 +3,14 @@ import type { StreamOptions } from "@earendil-works/pi-ai";
 import {
   Model,
   normalize_model_speed_level,
+  normalize_oauth_provider,
   type ModelSpeedLevel,
+  ANTIGRAVITY_CLOUD_CODE_ENDPOINTS,
   CHATGPT_BASE_URL,
   type ModelAuthType,
   type ModelApiFormat,
   type ModelThinkingLevel,
+  type OAuthProvider,
 } from "../../domain/model";
 import { create_provider_error } from "../network/provider-error";
 import {
@@ -28,6 +31,7 @@ export type ModelRequestIdentity = Readonly<{
 /** 单次翻译与 Agent 共用的请求快照；模型能力独立解析后交给 Pi 模型构造。 */
 export type ModelRequestSnapshot = Readonly<{
   auth_type: ModelAuthType;
+  oauth_provider: OAuthProvider | null; // 密钥模型为 null；旧 OAuth 配置视为 ChatGPT。
   api_format: ModelApiFormat; // 用户选定的请求协议，与目录模板来源独立。
   api_keys: readonly string[]; // API Key 路径至少保留一个凭据；OAuth 不在快照中保存 token。
   base_url: string;
@@ -90,9 +94,15 @@ export function read_model_request_snapshot(
   const request = read_json_record(record["request"]);
   const threshold = read_json_record(record["threshold"]);
   const thinking = read_json_record(record["thinking"]);
-  const base_url = normalize_pi_api_url(String(record["api_url"] ?? ""), api_format);
   const auth_type = record["auth_type"] === "oauth" ? "oauth" : "api_key";
-  if (auth_type === "oauth") {
+  const oauth_provider =
+    auth_type === "oauth" ? normalize_oauth_provider(record["oauth_provider"]) : null;
+  const raw_url = String(record["api_url"] ?? "");
+  const base_url =
+    oauth_provider === "google-antigravity"
+      ? normalize_antigravity_endpoint(raw_url)
+      : normalize_pi_api_url(raw_url, api_format);
+  if (oauth_provider === "chatgpt") {
     const generation = read_json_record(record["generation"]);
     for (const field of ["temperature", "top_p"])
       if (generation[`${field}_custom_enable`] === true)
@@ -101,22 +111,19 @@ export function read_model_request_snapshot(
       throw create_provider_error("ChatGPT requires the official Responses endpoint", undefined, {
         retryable: false,
       });
-    const headers = read_enabled_record(request, "extra_headers", "extra_headers_custom_enable");
-    for (const key of Object.keys(headers)) {
-      if (
-        [
-          "authorization",
-          "host",
-          "openai-organization",
-          "openai-project",
-          "chatgpt-account-id",
-        ].includes(key.toLowerCase())
-      )
-        throw create_provider_error(`Reserved header: ${key}`, undefined, { retryable: false });
-    }
+    reject_reserved_headers(request, [
+      "authorization",
+      "host",
+      "openai-organization",
+      "openai-project",
+      "chatgpt-account-id",
+    ]);
   }
+  if (oauth_provider === "google-antigravity")
+    reject_reserved_headers(request, ["authorization", "host"]);
   return {
     auth_type,
+    oauth_provider,
     api_format,
     api_keys: auth_type === "oauth" ? [] : collect_api_keys(String(record["api_key"] ?? "")),
     base_url,
@@ -172,7 +179,7 @@ export function resolve_one_shot_generation_options(
   snapshot: ModelRequestSnapshot,
 ): Pick<StreamOptions, "temperature" | "maxTokens" | "samplingParams"> {
   const result: Pick<StreamOptions, "temperature" | "maxTokens" | "samplingParams"> = {};
-  if (snapshot.auth_type === "oauth") return result;
+  if (snapshot.oauth_provider === "chatgpt") return result;
   const temperature = read_custom_number(snapshot.generation, "temperature");
   if (
     temperature !== null &&
@@ -208,6 +215,27 @@ export function resolve_max_tokens_for_request(snapshot: ModelRequestSnapshot): 
   return snapshot.output_token_limit === 0 || snapshot.output_token_limit === -1
     ? null
     : Math.max(1, snapshot.output_token_limit);
+}
+
+/** Antigravity 只接受官方 Cloud Code 入口，避免 OAuth 凭据发往其它主机。 */
+export function normalize_antigravity_endpoint(url: string): string {
+  const normalized = url.trim().replace(/\/+$/u, "");
+  if (!ANTIGRAVITY_CLOUD_CODE_ENDPOINTS.some((endpoint) => endpoint === normalized))
+    throw create_provider_error(
+      "Google Antigravity requires the official Cloud Code Assist endpoint",
+      undefined,
+      { retryable: false },
+    );
+  return normalized;
+}
+
+/** OAuth 凭据不能被自定义头改写认证或主机。 */
+function reject_reserved_headers(request: JsonRecord, reserved: readonly string[]): void {
+  const headers = read_enabled_record(request, "extra_headers", "extra_headers_custom_enable");
+  for (const key of Object.keys(headers)) {
+    if (reserved.includes(key.toLowerCase()))
+      throw create_provider_error(`Reserved header: ${key}`, undefined, { retryable: false });
+  }
 }
 
 /** 关闭扩展开关时丢弃已保存内容，避免默认配置进入请求。 */

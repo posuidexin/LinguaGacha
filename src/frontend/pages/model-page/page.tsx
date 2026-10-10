@@ -155,14 +155,16 @@ export function ModelPage(_props: ModelPageProps): JSX.Element {
                     readonly={model_page_state.readonly}
                     auth_disabled={model_page_state.test_disabled || chatgpt_login.busy}
                     on_login={() => {
-                      void chatgpt_login.start();
+                      void chatgpt_login.start(model.oauth_provider ?? "chatgpt");
                     }}
                     on_open_settings={(kind) => model_page_state.open_dialog(kind, model.id)}
                     on_copy={() => {
                       void model_page_state.request_copy_model(model.id);
                     }}
                     on_reset={() => model_page_state.request_reset_model(model.id)}
-                    on_logout={model_page_state.request_logout}
+                    on_logout={() => {
+                      model_page_state.request_logout(model.oauth_provider ?? "chatgpt");
+                    }}
                     on_delete={() => model_page_state.request_delete_model(model.id)}
                   />
                 }

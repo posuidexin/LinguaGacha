@@ -1,6 +1,12 @@
-import type { ModelSpeedLevel, ModelApiFormat, ModelThinkingLevel, ModelType } from "@domain/model";
+import type {
+  ModelSpeedLevel,
+  ModelApiFormat,
+  ModelThinkingLevel,
+  ModelType,
+  ModelAuthType,
+  OAuthProvider,
+} from "@domain/model";
 import type { ModelAgentConfig } from "@domain/model-agent";
-import type { ModelAuthType } from "@domain/model";
 import type { AvailableModel } from "@shared/model-catalog";
 
 export type ModelRequestSnapshot = {
@@ -38,6 +44,7 @@ export type ModelEntrySnapshot = {
   api_url: string;
   api_key: string;
   auth_type: ModelAuthType;
+  oauth_provider: OAuthProvider | null;
   model_id: string;
   available_thinking_levels: ModelThinkingLevel[];
   agent: ModelAgentConfig;
@@ -59,7 +66,7 @@ export type ModelDialogState =
 
 export type ModelConfirmState =
   | { kind: null; model_id: null }
-  | { kind: "logout"; model_id: null }
+  | { kind: "logout"; model_id: null; provider: OAuthProvider }
   | { kind: "delete"; model_id: string }
   | { kind: "reset"; model_id: string };
 

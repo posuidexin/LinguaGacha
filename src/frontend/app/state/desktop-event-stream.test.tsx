@@ -23,8 +23,10 @@ vi.mock("@frontend/app/desktop/desktop-api", async (importOriginal) => {
       snapshot: {
         instance_id: "auth-test",
         revision: 0,
-        connected: false,
-        login: null,
+        providers: {
+          chatgpt: { connected: false, login: null },
+          "google-antigravity": { connected: false, login: null },
+        },
       },
     })),
     open_event_stream: open_event_stream_mock,
@@ -106,7 +108,7 @@ function EventStreamProbe(props: {
     ...props.options,
     schedulerRef: scheduler_ref,
   });
-  return <output>{auth?.login?.status}</output>;
+  return <output>{auth?.providers.chatgpt.login?.status}</output>;
 }
 
 /** 挂载唯一订阅拥有者，测试通过模拟浏览器事件推进状态。 */
@@ -155,11 +157,16 @@ describe("useDesktopEventStream", () => {
         snapshot: {
           instance_id: "failed-login",
           revision: 1,
-          connected: false,
-          login: {
-            id: "attempt",
-            status: "failed",
-            error: { code: "model.provider_failed", message: "Permission denied" },
+          providers: {
+            chatgpt: {
+              connected: false,
+              login: {
+                id: "attempt",
+                status: "failed",
+                error: { code: "model.provider_failed", message: "Permission denied" },
+              },
+            },
+            "google-antigravity": { connected: false, login: null },
           },
         },
       }),

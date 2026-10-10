@@ -135,6 +135,35 @@
   text-align: center;
 }
 
+.model-page__auth-notice {
+  margin: 0 0 8px;
+  color: var(--muted-foreground);
+  font-size: var(--ui-font-size-12);
+  line-height: 1.4;
+}
+
+.model-page__auth-callback {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.model-page__auth-callback-field {
+  display: grid;
+  gap: 8px;
+}
+
+.model-page__auth-callback-submit {
+  justify-self: start;
+}
+
+.model-page__auth-callback-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--ui-font-size-12);
+  line-height: 1.4;
+}
+
 .model-page__oauth-icon {
   position: absolute;
   left: 36px;
