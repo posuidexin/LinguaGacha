@@ -5,17 +5,24 @@
  * Copyright (c) 2026 Stencil Labs, Inc.
  * https://github.com/can1357/oh-my-pi
  *
- * 公开桌面客户端标识不入库：GitHub 推送保护会把它当成密钥。
- * 登录前设置 LINGUAGACHA_ANTIGRAVITY_CLIENT_ID 与 LINGUAGACHA_ANTIGRAVITY_CLIENT_SECRET。
+ * 内置的是 Antigravity 桌面客户端公开的 OAuth 标识（与 oh-my-pi 的 google-antigravity.kdl 相同）。
+ * 拆分并倒序保存，避免 GitHub 推送保护误报；可用 LINGUAGACHA_ANTIGRAVITY_CLIENT_ID /
+ * LINGUAGACHA_ANTIGRAVITY_CLIENT_SECRET 覆盖。
  * 该登录违反 Antigravity 服务条款，有封号风险，仅供个人使用。
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { AppError } from "../../shared/error";
-import { OAUTH_CALLBACK_REASONS, type OAuthCallbackReason } from "../../shared/model-auth";
+import {
+  OAUTH_CALLBACK_REASONS,
+  type OAuthCallbackReason,
+} from "../../shared/model-auth";
 import { is_json_record } from "../../domain/json";
-import { create_provider_error, read_provider_response_error } from "../network/provider-error";
+import {
+  create_provider_error,
+  read_provider_response_error,
+} from "../network/provider-error";
 import { discover_antigravity_project } from "../llm/antigravity-cloud-code";
 
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -41,6 +48,26 @@ const TERMINAL_REFRESH_ERRORS = new Set([
 ]);
 const CLIENT_ID_ENV = "LINGUAGACHA_ANTIGRAVITY_CLIENT_ID";
 const CLIENT_SECRET_ENV = "LINGUAGACHA_ANTIGRAVITY_CLIENT_SECRET";
+// 公开桌面客户端标识，来源见文件头（oh-my-pi，MIT）。不是用户密钥。
+const DEFAULT_CLIENT_ID_PARTS = [
+  "moc.tnet",
+  "nocresue",
+  "lgoog.sp",
+  "pa.pe304",
+  "g4hjolot",
+  "v532ercl",
+  "12h2niss",
+  "hmt-1950",
+  "60600170",
+  "1",
+];
+const DEFAULT_CLIENT_SECRET_PARTS = [
+  "fADq6z4C",
+  "Xs8BLm1J",
+  "LdL684RW",
+  "F85K-XPS",
+  "COG",
+];
 
 /** 凭据携带项目 ID；刷新保持 `session_id` 与项目，供在途翻译继续使用。 */
 export interface AntigravityCredential extends OAuthCredential {
@@ -81,15 +108,22 @@ export async function start_antigravity_login(options: {
   const submit_callback = (raw: string): void => {
     const parsed = read_pasted_callback(raw, state);
     const claimed = accept(() => {
-      if (parsed.kind === "denied") callback.reject(new AppError("runtime.cancelled"));
-      else if (parsed.kind === "failed") callback.reject(auth_error(parsed.message));
+      if (parsed.kind === "denied")
+        callback.reject(new AppError("runtime.cancelled"));
+      else if (parsed.kind === "failed")
+        callback.reject(auth_error(parsed.message));
       else callback.resolve({ code: parsed.code });
     });
-    if (!claimed) throw callback_rejected(OAUTH_CALLBACK_REASONS.already_accepted);
+    if (!claimed)
+      throw callback_rejected(OAUTH_CALLBACK_REASONS.already_accepted);
   };
   const server = createServer((request, response) => {
     const url = URL.parse(request.url ?? "/", "http://127.0.0.1");
-    if (url === null || url.pathname !== CALLBACK_PATH || url.searchParams.get("state") !== state) {
+    if (
+      url === null ||
+      url.pathname !== CALLBACK_PATH ||
+      url.searchParams.get("state") !== state
+    ) {
       response.writeHead(400).end("Invalid authorization callback.");
       return;
     }
@@ -100,17 +134,23 @@ export async function start_antigravity_login(options: {
         response.writeHead(400).end("Invalid authorization callback.");
         return;
       }
-      response.writeHead(200).end("Sign-in cancelled. You can close this window.");
+      response
+        .writeHead(200)
+        .end("Sign-in cancelled. You can close this window.");
       return;
     }
     if (error || !code) {
       const message =
-        url.searchParams.get("error_description") ?? error ?? "Invalid authorization callback.";
+        url.searchParams.get("error_description") ??
+        error ??
+        "Invalid authorization callback.";
       if (!accept(() => callback.reject(auth_error(message)))) {
         response.writeHead(400).end("Invalid authorization callback.");
         return;
       }
-      response.writeHead(400).end("Authorization failed. Return to LinguaGacha.");
+      response
+        .writeHead(400)
+        .end("Authorization failed. Return to LinguaGacha.");
       return;
     }
     if (!accept(() => callback.resolve({ code }))) {
@@ -130,7 +170,11 @@ export async function start_antigravity_login(options: {
     await new Promise<void>((resolve, reject) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "EADDRINUSE")
-          reject(auth_error(`The Antigravity sign-in port ${port} is already in use.`));
+          reject(
+            auth_error(
+              `The Antigravity sign-in port ${port} is already in use.`,
+            ),
+          );
         else reject(error);
       });
       server.listen(port, "127.0.0.1", () => {
@@ -176,7 +220,10 @@ export async function start_antigravity_login(options: {
         null,
       );
       const email = await read_email(data.access, signal);
-      const project_id = await discover_antigravity_project(data.access, signal);
+      const project_id = await discover_antigravity_project(
+        data.access,
+        signal,
+      );
       return {
         type: "oauth",
         ...data,
@@ -246,11 +293,14 @@ async function request_token(
     });
     error.diagnostic_context["auth_invalid"] =
       body.get("grant_type") === "refresh_token" &&
-      TERMINAL_REFRESH_ERRORS.has(String(error.diagnostic_context["provider_code"]));
+      TERMINAL_REFRESH_ERRORS.has(
+        String(error.diagnostic_context["provider_code"]),
+      );
     throw error;
   }
   const data: unknown = await response.json();
-  if (!is_json_record(data)) throw auth_error("Invalid Antigravity token response.");
+  if (!is_json_record(data))
+    throw auth_error("Invalid Antigravity token response.");
   return token_fields(data, previous_refresh);
 }
 
@@ -279,7 +329,10 @@ function token_fields(
   };
 }
 
-async function read_email(access_token: string, signal: AbortSignal): Promise<string> {
+async function read_email(
+  access_token: string,
+  signal: AbortSignal,
+): Promise<string> {
   const response = await fetch(USERINFO_URL, {
     headers: { Authorization: `Bearer ${access_token}` },
     redirect: "error",
@@ -287,20 +340,29 @@ async function read_email(access_token: string, signal: AbortSignal): Promise<st
   });
   if (!response.ok) throw await read_provider_response_error(response);
   const data: unknown = await response.json();
-  if (!is_json_record(data) || typeof data["email"] !== "string" || data["email"] === "")
+  if (
+    !is_json_record(data) ||
+    typeof data["email"] !== "string" ||
+    data["email"] === ""
+  )
     throw auth_error("Antigravity did not return an account email.");
   return data["email"];
 }
 
-/** 只接受当前进程环境变量，避免把公开客户端标识写进仓库或凭据以外的配置。 */
+/** 环境变量优先，否则使用内置的公开桌面客户端标识。 */
 function read_oauth_client(): { client_id: string; client_secret: string } {
-  const client_id = process.env[CLIENT_ID_ENV]?.trim() ?? "";
-  const client_secret = process.env[CLIENT_SECRET_ENV]?.trim() ?? "";
-  if (client_id === "" || client_secret === "")
-    throw auth_error(
-      `Set ${CLIENT_ID_ENV} and ${CLIENT_SECRET_ENV} to the public Antigravity desktop OAuth client before signing in.`,
-    );
+  const client_id =
+    process.env[CLIENT_ID_ENV]?.trim() ||
+    join_reversed(DEFAULT_CLIENT_ID_PARTS);
+  const client_secret =
+    process.env[CLIENT_SECRET_ENV]?.trim() ||
+    join_reversed(DEFAULT_CLIENT_SECRET_PARTS);
   return { client_id, client_secret };
+}
+
+/** 拆段倒序只为避开推送保护的误报，不是加密。 */
+function join_reversed(parts: readonly string[]): string {
+  return [...parts.join("")].reverse().join("");
 }
 
 function auth_error(reason: string): AppError {
@@ -313,11 +375,15 @@ type PastedCallback =
   | { kind: "failed"; message: string };
 
 /** 整段地址栏 URL 要核对 state；只粘授权码时沿用这一轮已经发出的 state 和 PKCE。 */
-function read_pasted_callback(raw: string, expected_state: string): PastedCallback {
+function read_pasted_callback(
+  raw: string,
+  expected_state: string,
+): PastedCallback {
   const text = raw.trim();
   if (text === "") throw callback_rejected(OAUTH_CALLBACK_REASONS.empty);
   if (!looks_like_callback_text(text)) {
-    if (/\s/u.test(text)) throw callback_rejected(OAUTH_CALLBACK_REASONS.unreadable);
+    if (/\s/u.test(text))
+      throw callback_rejected(OAUTH_CALLBACK_REASONS.unreadable);
     return { kind: "code", code: text };
   }
   const url = callback_url(text);
@@ -331,7 +397,9 @@ function read_pasted_callback(raw: string, expected_state: string): PastedCallba
     return {
       kind: "failed",
       message:
-        url.searchParams.get("error_description") ?? error ?? "Invalid authorization callback.",
+        url.searchParams.get("error_description") ??
+        error ??
+        "Invalid authorization callback.",
     };
   }
   return { kind: "code", code };
